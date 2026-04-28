@@ -18,6 +18,7 @@ public class ExportResult
 
 /// <summary>
 /// Excel导出器 - 主控制器
+/// 支持多页签配置模式
 /// </summary>
 public class ExcelExporter
 {
@@ -63,8 +64,8 @@ public class ExcelExporter
                 return result;
             }
             
-            // 3. 读取所有表格
-            var tables = new List<TableData>();
+            // 3. 读取所有表格（每个文件可能包含多个页签）
+            var allTables = new List<TableData>();
             for (int i = 0; i < excelFiles.Count; i++)
             {
                 var file = excelFiles[i];
@@ -72,11 +73,15 @@ public class ExcelExporter
                 
                 try
                 {
-                    var tableData = _excelReader.ReadExcel(file);
-                    tables.Add(tableData);
+                    // ReadExcel现在返回List<TableData>（多页签）
+                    var tables = _excelReader.ReadExcel(file);
+                    allTables.AddRange(tables);
                     
                     // 收集枚举定义
-                    _enumManager.CollectEnums(tableData);
+                    foreach (var table in tables)
+                    {
+                        _enumManager.CollectEnums(table);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -86,10 +91,11 @@ public class ExcelExporter
             }
             
             Logger.NewLine();
+            Logger.Info($"共读取 {allTables.Count} 个配置表");
             
             // 4. 验证数据
             Logger.Info("开始验证数据...");
-            foreach (var table in tables)
+            foreach (var table in allTables)
             {
                 _validator.Validate(table);
                 _enumManager.ValidateTableEnums(table);
@@ -99,13 +105,13 @@ public class ExcelExporter
             await ExportEnumsAsync();
             
             // 6. 导出各表格
-            var validTables = tables.Where(t => t.IsValid).ToList();
-            var invalidTables = tables.Where(t => !t.IsValid).ToList();
+            var validTables = allTables.Where(t => t.IsValid).ToList();
+            var invalidTables = allTables.Where(t => !t.IsValid).ToList();
             
             // 输出验证失败的表格
             foreach (var table in invalidTables)
             {
-                Logger.Error($"表格验证失败 [{table.FileName}]，跳过导出");
+                Logger.Error($"表格验证失败 [{table.FileName}.{table.SheetName}]，跳过导出");
                 foreach (var error in table.Errors)
                 {
                     Logger.Error($"  - {error}");
@@ -117,7 +123,7 @@ public class ExcelExporter
             for (int i = 0; i < validTables.Count; i++)
             {
                 var table = validTables[i];
-                Logger.Progress($"导出 [{table.FileName}]...", i + 1, validTables.Count);
+                Logger.Progress($"导出 [{table.FileName}.{table.SheetName}]...", i + 1, validTables.Count);
                 
                 var success = await ExportTableAsync(table);
                 if (success)
@@ -127,7 +133,7 @@ public class ExcelExporter
                 else
                 {
                     result.FailCount++;
-                    result.Errors.Add($"导出失败: {table.FileName}");
+                    result.Errors.Add($"导出失败: {table.FileName}.{table.SheetName}");
                 }
             }
             
@@ -141,9 +147,9 @@ public class ExcelExporter
             }
             
             // 8. 输出警告信息
-            foreach (var table in tables.Where(t => t.Warnings.Count > 0))
+            foreach (var table in allTables.Where(t => t.Warnings.Count > 0))
             {
-                Logger.Warning($"表格 [{table.FileName}] 警告:");
+                Logger.Warning($"表格 [{table.FileName}.{table.SheetName}] 警告:");
                 foreach (var warning in table.Warnings)
                 {
                     Logger.Warning($"  - {warning}");
@@ -153,6 +159,7 @@ public class ExcelExporter
         catch (Exception ex)
         {
             Logger.Error($"导出过程异常: {ex.Message}");
+            Logger.Error($"堆栈: {ex.StackTrace}");
             result.Errors.Add($"导出过程异常: {ex.Message}");
         }
         
@@ -182,20 +189,30 @@ public class ExcelExporter
     {
         try
         {
-            // 并行导出JSON、C#、TypeScript
-            var tasks = new List<Task<bool>>
+            // 根据导出标记决定导出哪些文件
+            var tasks = new List<Task<bool>>();
+            
+            // 导出JSON（客户端和服务端都需要）
+            tasks.Add(_jsonExporter.ExportAsync(tableData));
+            
+            // 导出C#（Unity客户端）
+            if (tableData.ExportToClient)
             {
-                _jsonExporter.ExportAsync(tableData),
-                _csharpGenerator.GenerateClassAsync(tableData),
-                _tsGenerator.GenerateInterfaceAsync(tableData)
-            };
+                tasks.Add(_csharpGenerator.GenerateClassAsync(tableData));
+            }
+            
+            // 导出TypeScript（Cocos客户端）
+            if (tableData.ExportToClient)
+            {
+                tasks.Add(_tsGenerator.GenerateInterfaceAsync(tableData));
+            }
             
             var results = await Task.WhenAll(tasks);
             return results.All(r => r);
         }
         catch (Exception ex)
         {
-            Logger.Error($"导出表格 [{tableData.FileName}] 异常: {ex.Message}");
+            Logger.Error($"导出表格 [{tableData.FileName}.{tableData.SheetName}] 异常: {ex.Message}");
             return false;
         }
     }

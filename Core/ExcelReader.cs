@@ -9,6 +9,7 @@ namespace ExcelToGame.Core;
 
 /// <summary>
 /// Excel读取模块 - 解析xlsx/xls文件
+/// 支持多页签配置：第一个页签main为表定义，后续页签为实际数据
 /// </summary>
 public class ExcelReader
 {
@@ -22,21 +23,16 @@ public class ExcelReader
     }
     
     /// <summary>
-    /// 读取Excel文件
+    /// 读取Excel文件（多页签模式）
+    /// 返回多个TableData，每个页签对应一个
     /// </summary>
-    public TableData ReadExcel(string filePath)
+    public List<TableData> ReadExcel(string filePath)
     {
-        var tableData = new TableData
-        {
-            FileName = Path.GetFileNameWithoutExtension(filePath)
-        };
-        
-        // 解析类名和继承关系（格式：子表:父表）
-        ParseClassName(tableData);
+        var result = new List<TableData>();
         
         try
         {
-            Logger.Table(tableData.FileName, $"开始读取文件: {filePath}");
+            Logger.Info($"开始读取文件: {filePath}");
             
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
             IWorkbook workbook;
@@ -51,66 +47,237 @@ public class ExcelReader
             }
             else
             {
-                tableData.AddError($"不支持的文件格式: {Path.GetExtension(filePath)}");
-                return tableData;
+                Logger.Error($"不支持的文件格式: {Path.GetExtension(filePath)}");
+                return result;
             }
             
-            // 读取第一个工作表
-            var sheet = workbook.GetSheetAt(0);
-            if (sheet == null)
+            // 解析文件名（格式：ClassName[中文名]）
+            var (baseClassName, chineseName) = ParseFileName(Path.GetFileNameWithoutExtension(filePath));
+            
+            // 获取第一个页签（main页签 - 表定义）
+            var mainSheet = workbook.GetSheetAt(0);
+            if (mainSheet == null)
             {
-                tableData.AddError("工作表为空");
-                return tableData;
+                Logger.Error("工作表为空");
+                workbook.Close();
+                return result;
             }
             
-            // 解析表头
-            if (!ParseHeader(sheet, tableData))
+            // 解析main页签，获取所有页签定义
+            var sheetDefinitions = ParseMainSheet(mainSheet);
+            
+            Logger.Info($"文件 {baseClassName}[{chineseName}] 包含 {sheetDefinitions.Count} 个页签定义");
+            
+            // 遍历所有页签定义，读取对应页签数据
+            foreach (var sheetDef in sheetDefinitions)
             {
-                return tableData;
+                if (!sheetDef.ShouldExport)
+                {
+                    Logger.Info($"跳过页签（导出开关为FALSE）: {sheetDef.SheetName}");
+                    continue;
+                }
+                
+                // 查找对应的数据页签
+                var dataSheet = FindSheetByName(workbook, sheetDef.SheetName);
+                if (dataSheet == null)
+                {
+                    Logger.Warning($"未找到页签: {sheetDef.SheetName}");
+                    continue;
+                }
+                
+                // 创建TableData
+                var tableData = new TableData
+                {
+                    FileName = baseClassName,
+                    ClassName = sheetDef.SheetName, // 使用页签名作为类名
+                    ChineseName = sheetDef.Comment,
+                    SheetName = sheetDef.SheetName,
+                    TableType = sheetDef.TableType,
+                    ExportToClient = sheetDef.ExportToClient,
+                    ExportToServer = sheetDef.ExportToServer
+                };
+                
+                // 解析数据页签
+                if (ParseDataSheet(dataSheet, tableData))
+                {
+                    result.Add(tableData);
+                    Logger.Success($"成功读取页签 [{sheetDef.SheetName}]: {tableData.Fields.Count} 个字段, {tableData.Rows.Count} 行数据");
+                }
+                else
+                {
+                    Logger.Error($"读取页签失败: {sheetDef.SheetName}");
+                    foreach (var error in tableData.Errors)
+                    {
+                        Logger.Error($"  - {error}");
+                    }
+                }
             }
-            
-            // 解析数据行
-            ParseDataRows(sheet, tableData);
-            
-            Logger.Table(tableData.FileName, $"读取完成: {tableData.Fields.Count} 个字段, {tableData.Rows.Count} 行数据");
             
             workbook.Close();
         }
         catch (Exception ex)
         {
-            tableData.AddError($"读取Excel失败: {ex.Message}");
-            Logger.Error($"读取文件异常: {ex}");
+            Logger.Error($"读取Excel失败: {ex.Message}");
+            Logger.Error($"堆栈: {ex.StackTrace}");
         }
         
-        return tableData;
+        return result;
     }
     
     /// <summary>
-    /// 解析类名和继承关系
+    /// 解析文件名（格式：ClassName[中文名]）
     /// </summary>
-    private void ParseClassName(TableData tableData)
+    private (string className, string chineseName) ParseFileName(string fileName)
     {
-        var fileName = tableData.FileName;
-        
-        // 检查是否包含继承关系（格式：子表:父表）
+        // 移除继承关系标记（如果有）
+        var nameWithoutInheritance = fileName;
         if (fileName.Contains(':'))
         {
-            var parts = fileName.Split(':');
-            if (parts.Length == 2)
-            {
-                tableData.ClassName = parts[0].Trim();
-                tableData.ParentTableName = parts[1].Trim();
-                Logger.Table(tableData.FileName, $"检测到继承关系: {tableData.ClassName} : {tableData.ParentTableName}");
-            }
-            else
-            {
-                tableData.ClassName = fileName;
-            }
+            nameWithoutInheritance = fileName.Split(':')[0].Trim();
         }
-        else
+        
+        // 解析 ClassName[中文名] 格式
+        if (nameWithoutInheritance.Contains('[') && nameWithoutInheritance.Contains(']'))
         {
-            tableData.ClassName = fileName;
+            var startIdx = nameWithoutInheritance.IndexOf('[');
+            var endIdx = nameWithoutInheritance.IndexOf(']');
+            
+            if (startIdx > 0 && endIdx > startIdx)
+            {
+                var className = nameWithoutInheritance.Substring(0, startIdx).Trim();
+                var chineseName = nameWithoutInheritance.Substring(startIdx + 1, endIdx - startIdx - 1).Trim();
+                return (className, chineseName);
+            }
         }
+        
+        // 无法解析，返回原文件名
+        return (nameWithoutInheritance, string.Empty);
+    }
+    
+    /// <summary>
+    /// 解析main页签（表定义页签）
+    /// 结构：字段、file、name、client、server、type、END
+    /// </summary>
+    private List<SheetDefinition> ParseMainSheet(ISheet sheet)
+    {
+        var definitions = new List<SheetDefinition>();
+        
+        // main页签结构：
+        // 第1行：字段注释（字段、编号、名称、客户端是否导出、服务端是否导出、表格类型）
+        // 第2行：英文字段名（file、name、client、server、type）
+        // 第3行：导出开关（TRUE/FALSE）
+        // 第4行+：数据行
+        // END行：结束标记
+        
+        // 查找列索引
+        var headerRow = sheet.GetRow(1); // 第2行是字段名
+        if (headerRow == null)
+        {
+            Logger.Error("main页签缺少字段名行");
+            return definitions;
+        }
+        
+        int fileCol = -1, nameCol = -1, clientCol = -1, serverCol = -1, typeCol = -1, exportCol = -1;
+        
+        for (int col = 0; col <= headerRow.LastCellNum; col++)
+        {
+            var cellValue = GetCellStringValue(headerRow.GetCell(col)).ToLower();
+            
+            switch (cellValue)
+            {
+                case "file":
+                    fileCol = col;
+                    break;
+                case "name":
+                    nameCol = col;
+                    break;
+                case "client":
+                    clientCol = col;
+                    break;
+                case "server":
+                    serverCol = col;
+                    break;
+                case "type":
+                    typeCol = col;
+                    break;
+                case "export":
+                case "": // 第一列可能是空或export
+                    exportCol = col;
+                    break;
+            }
+            
+            // 遇到END列停止
+            if (cellValue.Equals("end", StringComparison.OrdinalIgnoreCase))
+                break;
+        }
+        
+        // 检查必要列
+        if (fileCol < 0)
+        {
+            Logger.Error("main页签缺少必要的'file'列");
+            return definitions;
+        }
+        
+        // 从第4行开始读取数据（0-based index = 3）
+        for (int rowIdx = 3; rowIdx <= sheet.LastRowNum; rowIdx++)
+        {
+            var row = sheet.GetRow(rowIdx);
+            if (row == null) continue;
+            
+            // 检查END行
+            var firstCell = GetCellStringValue(row.GetCell(0));
+            if (firstCell.Equals("END", StringComparison.OrdinalIgnoreCase))
+                break;
+            
+            // 检查导出开关
+            var exportValue = GetCellStringValue(row.GetCell(exportCol >= 0 ? exportCol : 0));
+            bool shouldExport = exportValue.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                               exportValue.Equals("1") ||
+                               exportValue.Equals("yes", StringComparison.OrdinalIgnoreCase);
+            
+            // 读取页签定义
+            var sheetName = GetCellStringValue(row.GetCell(fileCol));
+            if (string.IsNullOrWhiteSpace(sheetName))
+                continue;
+            
+            var definition = new SheetDefinition
+            {
+                SheetName = sheetName,
+                Comment = nameCol >= 0 ? GetCellStringValue(row.GetCell(nameCol)) : string.Empty,
+                ExportToClient = clientCol >= 0 ? IsYesValue(GetCellStringValue(row.GetCell(clientCol))) : true,
+                ExportToServer = serverCol >= 0 ? IsYesValue(GetCellStringValue(row.GetCell(serverCol))) : true,
+                TableType = typeCol >= 0 ? ParseTableType(GetCellStringValue(row.GetCell(typeCol))) : TableType.PrimaryKey,
+                ShouldExport = shouldExport
+            };
+            
+            definitions.Add(definition);
+        }
+        
+        return definitions;
+    }
+    
+    /// <summary>
+    /// 解析数据页签
+    /// </summary>
+    private bool ParseDataSheet(ISheet sheet, TableData tableData)
+    {
+        // 数据页签结构（标准4行表头）：
+        // 第1行：字段中文注释
+        // 第2行：英文字段名
+        // 第3行：字段数据类型
+        // 第4行+：数据行
+        // END行：结束标记
+        
+        // 解析表头
+        if (!ParseHeader(sheet, tableData))
+        {
+            return false;
+        }
+        
+        // 解析数据行
+        ParseDataRows(sheet, tableData);
+        
+        return tableData.IsValid;
     }
     
     /// <summary>
@@ -139,17 +306,7 @@ public class ExcelReader
             if (string.IsNullOrWhiteSpace(fieldName) || 
                 fieldName.Equals(_config.ColumnEndMarker, StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Debug($"遇到列结束标记，停止解析列。当前列数: {col}");
                 break;
-            }
-            
-            // 跳过导出开关列（第一列）
-            if (col == 0)
-            {
-                if (!fieldName.Equals(_config.ExportSwitchColumnName, StringComparison.OrdinalIgnoreCase))
-                {
-                    tableData.AddWarning($"第一列应为导出开关列，但名称为 '{fieldName}'");
-                }
             }
             
             var fieldInfo = new FieldInfo
@@ -158,7 +315,7 @@ public class ExcelReader
                 Name = fieldName,
                 Comment = GetCellStringValue(commentRow?.GetCell(col)),
                 RawType = GetCellStringValue(typeRow.GetCell(col)),
-                IsExportSwitch = col == 0,
+                IsExportSwitch = false, // 数据页签第一列不再是导出开关
                 IsPrimaryKey = fieldName.Equals("Id", StringComparison.OrdinalIgnoreCase) || 
                                fieldName.Equals("ID", StringComparison.OrdinalIgnoreCase)
             };
@@ -193,13 +350,6 @@ public class ExcelReader
             return false;
         }
         
-        // 检查是否有导出开关列
-        if (tableData.GetExportSwitchField() == null)
-        {
-            tableData.AddError("缺少导出开关列（第一列）");
-            return false;
-        }
-        
         return true;
     }
     
@@ -208,9 +358,6 @@ public class ExcelReader
     /// </summary>
     private void ParseDataRows(ISheet sheet, TableData tableData)
     {
-        var exportSwitchField = tableData.GetExportSwitchField();
-        if (exportSwitchField == null) return;
-        
         // 从第4行开始读取数据（0-based index = 3）
         for (int rowIdx = _config.DataStartRow; rowIdx <= sheet.LastRowNum; rowIdx++)
         {
@@ -223,30 +370,17 @@ public class ExcelReader
             
             if (firstValue.Equals(_config.RowEndMarker, StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Debug($"第 {rowIdx + 1} 行为结束标记行，停止读取数据");
                 break;
             }
             
             var rowData = new RowData
             {
-                RowNumber = rowIdx + 1
+                RowNumber = rowIdx + 1,
+                ShouldExport = true // 数据页签默认全部导出（导出控制在main页签）
             };
             
-            // 读取导出开关
-            var switchCell = row.GetCell(exportSwitchField.ColumnIndex);
-            var switchValue = GetCellStringValue(switchCell);
-            rowData.ShouldExport = switchValue.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-                                   switchValue.Equals("1") ||
-                                   switchValue.Equals("yes", StringComparison.OrdinalIgnoreCase);
-            
-            // 如果不需要导出，跳过此行的详细解析
-            if (!rowData.ShouldExport)
-            {
-                continue;
-            }
-            
             // 解析各字段值
-            foreach (var field in tableData.GetDataFields())
+            foreach (var field in tableData.Fields)
             {
                 var cell = row.GetCell(field.ColumnIndex);
                 var cellValue = GetCellStringValue(cell);
@@ -270,6 +404,50 @@ public class ExcelReader
             
             tableData.Rows.Add(rowData);
         }
+    }
+    
+    /// <summary>
+    /// 根据名称查找页签
+    /// </summary>
+    private ISheet? FindSheetByName(IWorkbook workbook, string sheetName)
+    {
+        for (int i = 0; i < workbook.NumberOfSheets; i++)
+        {
+            var sheet = workbook.GetSheetAt(i);
+            if (sheet.SheetName.Equals(sheetName, StringComparison.OrdinalIgnoreCase))
+            {
+                return sheet;
+            }
+        }
+        return null;
+    }
+    
+    /// <summary>
+    /// 解析表格类型
+    /// </summary>
+    private TableType ParseTableType(string typeValue)
+    {
+        return typeValue.Trim().ToLower() switch
+        {
+            "参数表" or "param" => TableType.Param,
+            "枚举表" or "enum" => TableType.Enum,
+            "主键表" or "primarykey" => TableType.PrimaryKey,
+            "数组表" or "array" => TableType.Array,
+            "分组表" or "group" => TableType.Group,
+            _ => TableType.PrimaryKey
+        };
+    }
+    
+    /// <summary>
+    /// 判断是否为YES/TRUE
+    /// </summary>
+    private bool IsYesValue(string value)
+    {
+        return value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("1") ||
+               value.Equals("是") ||
+               value.Equals("y");
     }
     
     /// <summary>

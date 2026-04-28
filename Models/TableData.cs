@@ -1,24 +1,80 @@
 namespace ExcelToGame.Models;
 
 /// <summary>
+/// 表格类型枚举
+/// </summary>
+public enum TableType
+{
+    /// <summary>
+    /// 参数表 - 单条配置（如全局参数）
+    /// </summary>
+    Param,
+    
+    /// <summary>
+    /// 枚举表 - 枚举定义
+    /// </summary>
+    Enum,
+    
+    /// <summary>
+    /// 主键表 - 以ID为主键的配置表
+    /// </summary>
+    PrimaryKey,
+    
+    /// <summary>
+    /// 数组表 - 数组结构配置
+    /// </summary>
+    Array,
+    
+    /// <summary>
+    /// 分组表 - 按组分类的配置
+    /// </summary>
+    Group
+}
+
+/// <summary>
 /// 表格数据模型
 /// </summary>
 public class TableData
 {
     /// <summary>
-    /// 表格文件名（不含扩展名）
+    /// 表格文件名（不含扩展名，如 Item[道具]）
     /// </summary>
     public string FileName { get; set; } = string.Empty;
     
     /// <summary>
-    /// 表格类名（从文件名解析）
+    /// 表格类名（从文件名解析，如 Item）
     /// </summary>
     public string ClassName { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// 表格中文名（从文件名解析，如 道具）
+    /// </summary>
+    public string? ChineseName { get; set; }
     
     /// <summary>
     /// 父表名（继承关系，格式：子表:父表）
     /// </summary>
     public string? ParentTableName { get; set; }
+    
+    /// <summary>
+    /// 表格类型（参数表/枚举表/主键表/数组表/分组表）
+    /// </summary>
+    public TableType TableType { get; set; } = TableType.PrimaryKey;
+    
+    /// <summary>
+    /// 页签名称（如 main、skillData、buffData 等）
+    /// </summary>
+    public string SheetName { get; set; } = "main";
+    
+    /// <summary>
+    /// 是否导出到客户端
+    /// </summary>
+    public bool ExportToClient { get; set; } = true;
+    
+    /// <summary>
+    /// 是否导出到服务端
+    /// </summary>
+    public bool ExportToServer { get; set; } = true;
     
     /// <summary>
     /// 字段定义列表
