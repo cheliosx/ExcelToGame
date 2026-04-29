@@ -1,64 +1,93 @@
-using ExcelToGame.Config;
 using ExcelToGame.Core;
+using ExcelToGame.Models;
 using ExcelToGame.Utils;
-using System.Text;
 
 namespace ExcelToGame;
 
-/// <summary>
-/// Excel转配置工具主程序入口
-/// 支持Unity/Cocos Creator双引擎
-/// </summary>
 class Program
 {
     static async Task Main(string[] args)
     {
-        // 设置UTF-8编码，确保中文不乱码
-        Console.OutputEncoding = Encoding.UTF8;
-        
-        Logger.Info("==============================================");
-        Logger.Info("   Excel转配置工具 - Unity/Cocos Creator");
-        Logger.Info("   版本: 1.0.0");
-        Logger.Info("==============================================");
-        
-        try
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+        Logger.Info("========================================");
+        Logger.Info("   Excel to Game Config Tool");
+        Logger.Info("   Supports: JSON / TypeScript / C#");
+        Logger.Info("========================================");
+
+        var inputDir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
+        var outputDir = args.Length > 1 ? args[1] : Path.Combine(AppContext.BaseDirectory, "Output");
+
+        var jsonDir = Path.Combine(outputDir, "Json");
+        var tsDir = Path.Combine(outputDir, "TS");
+        var csDir = Path.Combine(outputDir, "CSharp");
+
+        FileUtil.EnsureDirectory(jsonDir);
+        FileUtil.EnsureDirectory(tsDir);
+        FileUtil.EnsureDirectory(csDir);
+
+        var excelFiles = FileUtil.GetExcelFiles(inputDir);
+        if (excelFiles.Count == 0)
         {
-            // 加载配置
-            var config = AppConfig.Load();
-            Logger.Info($"输入目录: {config.InputDirectory}");
-            Logger.Info($"输出目录: {config.OutputDirectory}");
-            
-            // 创建导出器并执行
-            var exporter = new ExcelExporter(config);
-            var result = await exporter.ExportAllAsync();
-            
-            // 输出统计结果
-            Logger.Info("==============================================");
-            Logger.Info("   导出完成统计");
-            Logger.Info("==============================================");
-            Logger.Info($"成功: {result.SuccessCount} 个文件");
-            Logger.Info($"失败: {result.FailCount} 个文件");
-            Logger.Info($"总耗时: {result.ElapsedMilliseconds}ms");
-            
-            if (result.Errors.Count > 0)
+            Logger.Error($"No Excel files found: {inputDir}");
+            return;
+        }
+
+        Logger.Info($"Found {excelFiles.Count} Excel files");
+
+        var allExcelData = new List<ExcelFileData>();
+        var reader = new ExcelReader();
+
+        for (int i = 0; i < excelFiles.Count; i++)
+        {
+            Logger.Progress($"Reading...", i + 1, excelFiles.Count);
+            var excelData = reader.ReadExcelFile(excelFiles[i]);
+            if (excelData != null)
             {
-                Logger.Warning("\n错误详情:");
-                foreach (var error in result.Errors)
-                {
-                    Logger.Error($"  - {error}");
-                }
+                allExcelData.Add(excelData);
             }
-            
-            Environment.ExitCode = result.FailCount > 0 ? 1 : 0;
         }
-        catch (Exception ex)
+
+        Logger.Info($"Successfully read {allExcelData.Count} Excel files");
+
+        // 收集所有Sheet用于类型检�?
+        var allSheets = allExcelData.SelectMany(e => e.DataSheets).ToList();
+
+        var typeChecker = new TypeChecker();
+        typeChecker.RegisterTypes(allSheets);
+
+        if (!typeChecker.CheckTypes(allSheets))
         {
-            Logger.Error($"程序异常: {ex.Message}");
-            Logger.Error($"堆栈: {ex.StackTrace}");
-            Environment.ExitCode = 1;
+            Logger.Error("Type check failed, aborting export");
+            return;
         }
-        
-        Logger.Info("\n按任意键退出...");
-        Console.ReadKey();
+
+        // 收集语言文本
+        var langGenerator = new LanguageGenerator();
+        langGenerator.CollectLanguages(allSheets);
+
+        // 导出语言文件
+        await langGenerator.ExportLanguageJson(Path.Combine(outputDir, "language.json"));
+        await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
+
+        // 生成代码文件（每个Excel文件生成一个）
+        var codeGenerator = new CodeGenerator();
+
+        for (int i = 0; i < allExcelData.Count; i++)
+        {
+            var excelData = allExcelData[i];
+            Logger.Progress($"Generating {excelData.OutputName}...", i + 1, allExcelData.Count);
+
+            await codeGenerator.GenerateJson(excelData, jsonDir);
+            await codeGenerator.GenerateTypeScript(excelData, tsDir);
+            await codeGenerator.GenerateCSharp(excelData, csDir);
+        }
+
+        Logger.Info("========================================");
+        Logger.Success("Export completed!");
+        Logger.Info($"Output directory: {outputDir}");
+        Logger.Info("========================================");
     }
 }
+
+

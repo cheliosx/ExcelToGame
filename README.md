@@ -1,231 +1,244 @@
-# Excel转配置工具 - Unity/Cocos Creator双引擎支持
+# Excel转游戏配置工具
 
-基于 .NET 8 开发的Excel配置导出工具，支持导出JSON、C#实体类、TypeScript接口，适用于Unity和Cocos Creator游戏引擎。
+基于 .NET 8 的 Excel 配置导出工具，支持导出 JSON、TypeScript（Cocos）、C#（Unity）。
 
 ## 一、功能特性
 
-- **多引擎支持**：同时生成Unity(C#)和Cocos Creator(TypeScript)代码
-- **完整类型系统**：支持基础类型、枚举、数组、嵌套对象
-- **继承关系**：支持表格间的类继承关系
-- **数据校验**：字段名校验、类型校验、主键重复检测、枚举值校验
-- **智能过滤**：导出开关控制、END标记、自动排除临时文件
-- **中文支持**：完整的中文注释和日志输出
+- ✅ 多 Sheet 支持，Sheet 名即表名
+- ✅ 严格遵循策划表格式（符号列、END 标记）
+- ✅ 支持数据类型：number、string、language、array<T>、自定义类型
+- ✅ 多语言自动生成唯一 key，统一收集到 language.json
+- ✅ 自定义类型检测，未定义类型报错
+- ✅ 继承支持（extend 列）
+- ✅ 枚举表特殊处理
+- ✅ 客户端/服务端导出控制（client/server 列）
 
-## 二、项目结构
+## 二、Excel 格式规范
+
+### Sheet 结构
+
+```
+第1行：字段注释（中文说明）
+第2行：字段名（英文）
+第3行：数据类型
+第4行+：数据
+END行：结束标记
+```
+
+### 列结构
+
+| 符号 | 字段1 | 字段2 | 字段3 | ... | END |
+|------|-------|-------|-------|-----|-----|
+| 1/0  | ...   | ...   | ...   | ... |     |
+
+- **第一列（符号）**：1=导出，0=不导出
+- **最后一列**：固定为 END，工具自动忽略
+
+### 数据类型
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| `number` | 数字 | 100, 3.14 |
+| `string` | 字符串 | "hello" |
+| `language` | 多语言文本 | 自动收集到 language.json |
+| `array<number>` | 数字数组 | [1,2,3] |
+| `array<string>` | 字符串数组 | ["a","b"] |
+| `example.skill` | 自定义类型 | 引用其他表 |
+
+### 特殊列
+
+- **client**：YES/NO，控制是否导出到客户端
+- **server**：YES/NO，控制是否导出到服务端
+- **extend**：继承其他表名
+
+## 三、输出格式
+
+### 1. JSON 格式
+
+```json
+{
+    "setConfig": {
+        "amendName": [10001, 100],
+        "Recharge1": 5000
+    },
+    "setAspect": [
+        "[101,\"7047\",4,...]",
+        "[102,\"6907\",4,...]"
+    ]
+}
+```
+
+### 2. TypeScript 格式
+
+```typescript
+import { _lang } from "./_language";
+
+export class _ItemConfig {
+    public _data: any;
+    get amendName(): number[] {
+        return this._data['amendName'];
+    }
+}
+
+export class _ItemAspect {
+    public objects: any;
+    get name(): string {
+        return _lang.t(this.objects['2']);
+    }
+}
+
+export class _Item {
+    public static Config: _ItemConfig = new _ItemConfig();
+    public static Aspect: _ItemAspect[] = [];
+    public static AspectMap: _ItemAspectMap = new _ItemAspectMap();
+    
+    public static findById(id: number): _ItemAspect | undefined {
+        return this.AspectMap.get(id);
+    }
+}
+```
+
+### 3. C# 格式
+
+```csharp
+namespace Game.Config
+{
+    public class ItemConfig
+    {
+        public int[] amendName { get; set; }
+    }
+    
+    public class ItemAspect
+    {
+        public string name => LanguageManager.GetText(_nameKey);
+        [JsonProperty] private string _nameKey;
+    }
+    
+    public static class Item
+    {
+        public static ItemConfig Config { get; private set; }
+        public static Dictionary<int, ItemAspect> AspectMap { get; private set; }
+        
+        public static ItemAspect FindById(int id) => AspectMap.TryGetValue(id, out var a) ? a : null;
+    }
+}
+```
+
+### 4. 多语言文件
+
+**language.json**：
+```json
+{
+    "Text_1001": "初始名字",
+    "Item_1002_Name": "道具2",
+    "Skill_1001_Desc": "技能描述"
+}
+```
+
+**_language.ts**：
+```typescript
+export class _language {
+    private _data: any;
+    load(_data: any) { this._data = _data; }
+    t(id: string): string { return this._data[id] || id; }
+    replaceTemplate(template: string, ...values: any[]): string { ... }
+}
+export const _lang = new _language();
+```
+
+## 四、目录结构
 
 ```
 ExcelToGame/
-├── Program.cs                    # 程序入口
-├── ExcelToGame.csproj           # 项目文件
-├── Config/
-│   └── AppConfig.cs             # 配置管理
+├── Program.cs              # 程序入口
+├── ExcelToGame.csproj      # 项目文件
 ├── Core/
-│   ├── ExcelReader.cs           # Excel读取模块
-│   ├── TypeParser.cs            # 类型解析模块
-│   ├── DataValidator.cs         # 数据校验模块
-│   ├── EnumManager.cs           # 枚举管理模块
-│   ├── JsonExporter.cs          # JSON导出模块
-│   ├── CSharpCodeGenerator.cs   # C#代码生成
-│   ├── TypeScriptGenerator.cs   # TypeScript代码生成
-│   └── ExcelExporter.cs         # 主导出控制器
+│   ├── ExcelReader.cs      # Excel读取（NPOI）
+│   ├── TypeChecker.cs      # 类型检查
+│   ├── LanguageGenerator.cs # 多语言生成
+│   └── CodeGenerator.cs    # 代码生成
 ├── Models/
-│   ├── FieldInfo.cs             # 字段信息模型
-│   ├── RowData.cs               # 行数据模型
-│   └── TableData.cs             # 表格数据模型
+│   ├── FieldInfo.cs        # 字段信息
+│   └── SheetData.cs        # Sheet数据
 ├── Utils/
-│   ├── Logger.cs                # 日志工具
-│   └── FileUtils.cs              # 文件工具
-├── ExcelTemplates/              # Excel模板示例
-│   └── README.md                # 填表规范说明
-└── config.json                  # 配置文件（运行后生成）
+│   ├── FileUtil.cs         # 文件工具
+│   └── Logger.cs           # 日志工具
+└── README.md               # 使用说明
 ```
 
-## 三、快速开始
+## 五、使用方法
 
 ### 1. 安装依赖
-
-```bash
-# 安装NPOI库（Excel解析）
-dotnet add package NPOI --version 2.6.2
-
-# 安装编码支持
-dotnet add package System.Text.Encoding.CodePages --version 8.0.0
-```
-
-或直接还原：
 
 ```bash
 dotnet restore
 ```
 
-### 2. 编译项目
+### 2. 编译
 
 ```bash
 dotnet build -c Release
 ```
 
-### 3. 运行工具
+### 3. 运行
 
 ```bash
-dotnet run
-# 或运行编译后的可执行文件
+# 默认路径
 ./bin/Release/net8.0/ExcelToGame.exe
+
+# 指定输入输出路径
+./bin/Release/net8.0/ExcelToGame.exe [Excel目录] [输出目录]
 ```
 
-## 四、配置说明
-
-首次运行会自动生成 `config.json` 配置文件：
-
-```json
-{
-  "inputDirectory": "Excel",           # Excel输入目录
-  "outputDirectory": "Output",         # 输出根目录
-  "jsonOutputPath": "Json",            # JSON输出子目录
-  "typeScriptOutputPath": "TypeScript", # TS输出子目录
-  "csharpOutputPath": "CSharp",        # C#输出子目录
-  "enumOutputPath": "Enums",           # 枚举输出子目录
-  "csharpNamespace": "Game.Config",    # C#命名空间
-  "exportSwitchColumnName": "Export",  # 导出开关列名
-  "rowEndMarker": "END",               # 行结束标记
-  "columnEndMarker": "END",            # 列结束标记
-  "formatJson": true                   # 是否格式化JSON
-}
-```
-
-## 五、Excel表格规范
-
-### 表头结构（固定4行）
-
-| 行号 | 内容 | 说明 |
-|------|------|------|
-| 第1行 | 中文注释 | 生成代码注释 |
-| 第2行 | 英文字段名 | 变量名 |
-| 第3行 | 数据类型 | 类型声明 |
-| 第4行+ | 数据 | 实际配置数据 |
-
-### 数据类型
-
-| 类型格式 | 说明 | 示例 |
-|----------|------|------|
-| `int` | 整数 | 100 |
-| `long` | 长整数 | 1000000 |
-| `float` | 浮点数 | 3.14 |
-| `double` | 双精度浮点 | 3.14159 |
-| `bool` | 布尔值 | true/false |
-| `string` | 字符串 | text |
-| `int[]` | 整数数组 | 1,2,3 |
-| `enum_Xxx` | 枚举类型 | enum_ItemType |
-| `Xxx` | 自定义类型 | RewardInfo |
-
-### 特殊标记
-
-- **导出开关**：第一列控制是否导出（true/false）
-- **END行**：数据结束后填写 `END`
-- **END列**：字段结束后填写 `END`
-
-### 继承语法
-
-文件名格式：`子表:父表.xlsx`
-
-例如：`Equipment:Item.xlsx` 表示 Equipment 继承自 Item
-
-## 六、输出文件
-
-运行后会在 `Output` 目录生成：
+### 4. 输出目录
 
 ```
 Output/
-├── Json/                    # JSON配置文件
-│   ├── Item.json
-│   └── PlayerLevel.json
-├── CSharp/                  # Unity C#实体类
-│   ├── Enums/
-│   │   └── Enums.cs
-│   ├── Item.cs
-│   ├── PlayerLevel.cs
-│   └── ConfigManager.cs
-└── TypeScript/              # Cocos TS接口
-    ├── Enums/
-    │   └── Enums.ts
-    ├── Item.ts
-    ├── PlayerLevel.ts
-    └── ConfigManager.ts
+├── Json/           # JSON配置文件
+├── TS/             # TypeScript代码
+│   └── _language.ts
+├── CSharp/         # C#代码
+└── language.json   # 多语言文件
 ```
 
-## 七、Unity集成
+## 六、Excel 示例
 
-### 1. 复制生成的C#文件到Unity项目
+### 道具表 (item)
 
-将 `Output/CSharp/` 下的文件复制到Unity的 `Scripts/Config/` 目录
+| 符号 | Id | name | type | value | client | server | END |
+|------|----|------|------|-------|--------|--------|-----|
+| 注释 | ID | 名称 | 类型 | 数值 | 客户端 | 服务端 |     |
+| 类型 | number | language | number | number | string | string |     |
+| 1 | 1001 | 铁剑 | 1 | 100 | YES | YES |     |
+| 1 | 1002 | 木盾 | 2 | 50 | YES | NO |     |
+| END | | | | | | |     |
 
-### 2. 加载配置
+### 参数表 (setConfig)
 
-```csharp
-// 在启动时加载所有配置
-ConfigManager.Instance.LoadAllConfigs();
+| 符号 | key | value | END |
+|------|-----|-------|-----|
+| 注释 | 键 | 值 |     |
+| 类型 | string | number |     |
+| 1 | Recharge1 | 5000 |     |
+| 1 | amendName | 100 |     |
+| END | | |     |
 
-// 获取配置项
-var item = ConfigManager.Instance.ItemDict[1001];
-```
+## 七、注意事项
 
-### 3. JSON文件放置
+1. **第一列必须是符号列**：1=导出，0=不导出
+2. **最后一列必须是 END**：工具自动识别并忽略
+3. **language 类型字段**：自动生成唯一 key，格式为 `表名_ID_字段名`
+4. **自定义类型**：如 `example.skill`，必须确保 skill 表已定义
+5. **数组格式**：支持 `[1,2,3]` 或 `1,2,3` 两种写法
 
-将 `Output/Json/` 下的文件放入Unity的 `Resources/Config/` 目录
+## 八、错误处理
 
-## 八、Cocos Creator集成
+- **红色错误**：类型未定义、Sheet 解析失败
+- **黄色警告**：空值、格式不规范
+- **绿色成功**：文件生成成功
 
-### 1. 复制生成的TS文件到Cocos项目
+## 九、依赖
 
-将 `Output/TypeScript/` 下的文件复制到Cocos项目的 `assets/scripts/config/` 目录
-
-### 2. 加载配置
-
-```typescript
-// 在启动时加载所有配置
-await ConfigManager.loadAll();
-
-// 获取配置项
-const item = ConfigManager.getItem(1001);
-```
-
-### 3. JSON文件放置
-
-将 `Output/Json/` 下的文件放入Cocos项目的 `assets/resources/config/` 目录
-
-## 九、日志输出
-
-工具运行时会输出彩色日志：
-
-- **白色**：普通信息
-- **绿色**：成功信息
-- **黄色**：警告信息
-- **红色**：错误信息
-- **青色**：表格处理信息
-
-## 十、常见问题
-
-### Q: 中文乱码怎么办？
-A: 工具已自动设置UTF-8编码，确保控制台支持UTF-8显示。
-
-### Q: 如何排除某些Excel文件？
-A: 将不需要导出的文件重命名为以 `~$` 开头，或设置为隐藏文件。
-
-### Q: 枚举值如何定义？
-A: 枚举值从表格数据中自动收集，所有使用该枚举的表格中的值会被合并。
-
-### Q: 如何添加新的数据类型？
-A: 修改 `TypeParser.cs` 中的类型解析逻辑，并在 `FieldInfo.cs` 中添加对应的代码生成。
-
-## 十一、NuGet包安装命令
-
-```bash
-# 安装NPOI（Excel解析）
-dotnet add package NPOI --version 2.6.2
-
-# 安装编码支持
-dotnet add package System.Text.Encoding.CodePages --version 8.0.0
-```
-
-## 十二、许可证
-
-MIT License
+- .NET 8
+- NPOI 2.6.2（Excel解析）
+- System.Text.Encoding.CodePages 8.0.0
