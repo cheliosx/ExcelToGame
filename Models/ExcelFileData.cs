@@ -14,6 +14,7 @@ public class SheetDefinition
 {
     public string File { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string ChineseName { get; set; } = string.Empty;  // 中文名称
     public bool Client { get; set; } = true;
     public bool Server { get; set; } = true;
     public string Type { get; set; } = string.Empty;

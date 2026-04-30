@@ -1,300 +1,90 @@
 ﻿import { _lang } from "./_language";
 
-/** testArg 配置 */
-export class _testArgConfig {
+/** gameArg 閰嶇疆 */
+export class _gameArgConfig {
     public _data: any;
 
-}
-
-/** testArg 数据项 */
-export class _testArgAspect {
-    public objects: any;
-
-}
-
-/** testArg 数据映射 */
-export class _testArgAspectMap {
-    private _map: Map<number, _testArgAspect> = new Map();
-
-    set(id: number, aspect: _testArgAspect) {
-        this._map.set(id, aspect);
+    get initHp(): number {
+        return this._data['initHp'];
     }
 
-    get(id: number): _testArgAspect | undefined {
-        return this._map.get(id);
+    get initItems(): any[] {
+        return JSON.parse(this._data['initItems'] || '[]');
     }
+
+    get gamePath(): string {
+        return this._data['gamePath'];
+    }
+
 }
 
-/** testArg */
-export class _testArg {
-    public static Config: _testArgConfig = new _testArgConfig();
-    public static Aspect: _testArgAspect[] = [];
-    public static AspectMap: _testArgAspectMap = new _testArgAspectMap();
-
-    public static findById(id: number): _testArgAspect | undefined {
-        return this.AspectMap.get(id);
-    }
+/** gameArg */
+export class _gameArg {
+    public static Config: _gameArgConfig = new _gameArgConfig();
 
     public static load(jsonData: any): void {
         if (jsonData.setConfig) {
             this.Config._data = jsonData.setConfig;
         }
-        if (jsonData.setAspect) {
-            this.Aspect = [];
-            this.AspectMap = new _testArgAspectMap();
-            for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _testArgAspect();
-                aspect.objects = JSON.parse(jsonData.setAspect[i]);
-                this.Aspect.push(aspect);
-                let id = aspect.objects['1'];
-                this.AspectMap.set(id, aspect);
-            }
-        }
     }
 }
 
-/** testKey 配置 */
-export class _testKeyConfig {
+/** roleLevel 閰嶇疆 */
+export class _roleLevelConfig {
     public _data: any;
 
-    get number(): any {
-        return this._data['number'];
+    get lv(): number {
+        return this._data['lv'];
     }
 
-    get number_1(): any {
-        return this._data['number'];
+    get hp(): number {
+        return this._data['hp'];
     }
 
-    get number_2(): any {
-        return this._data['number'];
-    }
-
-    get __(): any {
-        return this._data['[]'];
-    }
-
-    get number_3(): any {
-        return this._data['number'];
+    get def(): number {
+        return this._data['def'];
     }
 
 }
 
-/** testKey 数据项 */
-export class _testKeyAspect {
+/** roleLevel ??? */
+export class _roleLevelAspect {
     public objects: any;
 
-    get number(): any {
+    get lv(): number {
         return this.objects['1'];
     }
 
-    get language(): string {
-        return _lang.t(this.objects['2']);
-    }
-
-    get number_1(): any {
-        return JSON.parse(this.objects['3'] || '{}');
-    }
-
-    get number_2(): any {
-        return this.objects['4'];
-    }
-
-    get __(): any {
-        return JSON.parse(this.objects['5'] || '{}');
-    }
-
-    get language_1(): string {
-        return _lang.t(this.objects['6']);
-    }
-
-    get number_3(): any {
-        return this.objects['7'];
-    }
-
-}
-
-/** testKey 数据映射 */
-export class _testKeyAspectMap {
-    private _map: Map<number, _testKeyAspect> = new Map();
-
-    set(id: number, aspect: _testKeyAspect) {
-        this._map.set(id, aspect);
-    }
-
-    get(id: number): _testKeyAspect | undefined {
-        return this._map.get(id);
-    }
-}
-
-/** testKey */
-export class _testKey {
-    public static Config: _testKeyConfig = new _testKeyConfig();
-    public static Aspect: _testKeyAspect[] = [];
-    public static AspectMap: _testKeyAspectMap = new _testKeyAspectMap();
-
-    public static findById(id: number): _testKeyAspect | undefined {
-        return this.AspectMap.get(id);
-    }
-
-    public static load(jsonData: any): void {
-        if (jsonData.setConfig) {
-            this.Config._data = jsonData.setConfig;
-        }
-        if (jsonData.setAspect) {
-            this.Aspect = [];
-            this.AspectMap = new _testKeyAspectMap();
-            for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _testKeyAspect();
-                aspect.objects = JSON.parse(jsonData.setAspect[i]);
-                this.Aspect.push(aspect);
-                let id = aspect.objects['1'];
-                this.AspectMap.set(id, aspect);
-            }
-        }
-    }
-}
-
-/** testGroup 配置 */
-export class _testGroupConfig {
-    public _data: any;
-
-    get number(): any {
-        return this._data['number'];
-    }
-
-    get number_1(): any {
-        return this._data['number'];
-    }
-
-    get number_2(): any {
-        return this._data['number'];
-    }
-
-    get number_3(): any {
-        return this._data['number'];
-    }
-
-}
-
-/** testGroup 数据项 */
-export class _testGroupAspect {
-    public objects: any;
-
-    get number(): any {
-        return this.objects['1'];
-    }
-
-    get number_1(): any {
+    get hp(): number {
         return this.objects['2'];
     }
 
-    get number_2(): any {
-        return this.objects['3'];
-    }
-
-    get number_3(): any {
-        return this.objects['4'];
-    }
-
-}
-
-/** testGroup 数据映射 */
-export class _testGroupAspectMap {
-    private _map: Map<number, _testGroupAspect> = new Map();
-
-    set(id: number, aspect: _testGroupAspect) {
-        this._map.set(id, aspect);
-    }
-
-    get(id: number): _testGroupAspect | undefined {
-        return this._map.get(id);
-    }
-}
-
-/** testGroup */
-export class _testGroup {
-    public static Config: _testGroupConfig = new _testGroupConfig();
-    public static Aspect: _testGroupAspect[] = [];
-    public static AspectMap: _testGroupAspectMap = new _testGroupAspectMap();
-
-    public static findById(id: number): _testGroupAspect | undefined {
-        return this.AspectMap.get(id);
-    }
-
-    public static load(jsonData: any): void {
-        if (jsonData.setConfig) {
-            this.Config._data = jsonData.setConfig;
-        }
-        if (jsonData.setAspect) {
-            this.Aspect = [];
-            this.AspectMap = new _testGroupAspectMap();
-            for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _testGroupAspect();
-                aspect.objects = JSON.parse(jsonData.setAspect[i]);
-                this.Aspect.push(aspect);
-                let id = aspect.objects['1'];
-                this.AspectMap.set(id, aspect);
-            }
-        }
-    }
-}
-
-/** testArray 配置 */
-export class _testArrayConfig {
-    public _data: any;
-
-    get number(): any {
-        return this._data['number'];
-    }
-
-    get number_1(): any {
-        return this._data['number'];
-    }
-
-    get number_2(): any {
-        return this._data['number'];
-    }
-
-}
-
-/** testArray 数据项 */
-export class _testArrayAspect {
-    public objects: any;
-
-    get number(): any {
-        return this.objects['1'];
-    }
-
-    get number_1(): any {
-        return this.objects['2'];
-    }
-
-    get number_2(): any {
+    get def(): number {
         return this.objects['3'];
     }
 
 }
 
-/** testArray 数据映射 */
-export class _testArrayAspectMap {
-    private _map: Map<number, _testArrayAspect> = new Map();
+/** roleLevel 鏁版嵁鏄犲皠 */
+export class _roleLevelAspectMap {
+    private _map: Map<number, _roleLevelAspect> = new Map();
 
-    set(id: number, aspect: _testArrayAspect) {
+    set(id: number, aspect: _roleLevelAspect) {
         this._map.set(id, aspect);
     }
 
-    get(id: number): _testArrayAspect | undefined {
+    get(id: number): _roleLevelAspect | undefined {
         return this._map.get(id);
     }
 }
 
-/** testArray */
-export class _testArray {
-    public static Config: _testArrayConfig = new _testArrayConfig();
-    public static Aspect: _testArrayAspect[] = [];
-    public static AspectMap: _testArrayAspectMap = new _testArrayAspectMap();
+/** roleLevel */
+export class _roleLevel {
+    public static Config: _roleLevelConfig = new _roleLevelConfig();
+    public static Aspect: _roleLevelAspect[] = [];
+    public static AspectMap: _roleLevelAspectMap = new _roleLevelAspectMap();
 
-    public static findById(id: number): _testArrayAspect | undefined {
+    public static findById(id: number): _roleLevelAspect | undefined {
         return this.AspectMap.get(id);
     }
 
@@ -304,9 +94,9 @@ export class _testArray {
         }
         if (jsonData.setAspect) {
             this.Aspect = [];
-            this.AspectMap = new _testArrayAspectMap();
+            this.AspectMap = new _roleLevelAspectMap();
             for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _testArrayAspect();
+                let aspect = new _roleLevelAspect();
                 aspect.objects = JSON.parse(jsonData.setAspect[i]);
                 this.Aspect.push(aspect);
                 let id = aspect.objects['1'];
@@ -316,157 +106,55 @@ export class _testArray {
     }
 }
 
-/** testSkill 配置 */
-export class _testSkillConfig {
-    public _data: any;
-
-    get number(): any {
-        return this._data['number'];
-    }
-
-}
-
-/** testSkill 数据项 */
-export class _testSkillAspect {
-    public objects: any;
-
-    get number(): any {
-        return this.objects['1'];
-    }
-
-    get language(): string {
-        return _lang.t(this.objects['2']);
-    }
-
-}
-
-/** testSkill 数据映射 */
-export class _testSkillAspectMap {
-    private _map: Map<number, _testSkillAspect> = new Map();
-
-    set(id: number, aspect: _testSkillAspect) {
-        this._map.set(id, aspect);
-    }
-
-    get(id: number): _testSkillAspect | undefined {
-        return this._map.get(id);
-    }
-}
-
-/** testSkill */
-export class _testSkill {
-    public static Config: _testSkillConfig = new _testSkillConfig();
-    public static Aspect: _testSkillAspect[] = [];
-    public static AspectMap: _testSkillAspectMap = new _testSkillAspectMap();
-
-    public static findById(id: number): _testSkillAspect | undefined {
-        return this.AspectMap.get(id);
-    }
-
-    public static load(jsonData: any): void {
-        if (jsonData.setConfig) {
-            this.Config._data = jsonData.setConfig;
-        }
-        if (jsonData.setAspect) {
-            this.Aspect = [];
-            this.AspectMap = new _testSkillAspectMap();
-            for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _testSkillAspect();
-                aspect.objects = JSON.parse(jsonData.setAspect[i]);
-                this.Aspect.push(aspect);
-                let id = aspect.objects['1'];
-                this.AspectMap.set(id, aspect);
-            }
-        }
-    }
-}
-
-/** equipType 配置 */
-export class _equipTypeConfig {
-    public _data: any;
-
-}
-
-/** equipType 数据项 */
-export class _equipTypeAspect {
-    public objects: any;
-
-}
-
-/** equipType 数据映射 */
-export class _equipTypeAspectMap {
-    private _map: Map<number, _equipTypeAspect> = new Map();
-
-    set(id: number, aspect: _equipTypeAspect) {
-        this._map.set(id, aspect);
-    }
-
-    get(id: number): _equipTypeAspect | undefined {
-        return this._map.get(id);
-    }
-}
-
-/** equipType */
-export class _equipType {
-    public static Config: _equipTypeConfig = new _equipTypeConfig();
-    public static Aspect: _equipTypeAspect[] = [];
-    public static AspectMap: _equipTypeAspectMap = new _equipTypeAspectMap();
-
-    public static findById(id: number): _equipTypeAspect | undefined {
-        return this.AspectMap.get(id);
-    }
-
-    public static load(jsonData: any): void {
-        if (jsonData.setConfig) {
-            this.Config._data = jsonData.setConfig;
-        }
-        if (jsonData.setAspect) {
-            this.Aspect = [];
-            this.AspectMap = new _equipTypeAspectMap();
-            for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _equipTypeAspect();
-                aspect.objects = JSON.parse(jsonData.setAspect[i]);
-                this.Aspect.push(aspect);
-                let id = aspect.objects['1'];
-                this.AspectMap.set(id, aspect);
-            }
-        }
-    }
-}
-
-/** item 配置 */
+/** item 閰嶇疆 */
 export class _itemConfig {
     public _data: any;
 
-    get number(): any {
-        return this._data['number'];
+    get id(): number {
+        return this._data['id'];
     }
 
-    get string(): any {
-        return this._data['string'];
+    get icon(): string {
+        return this._data['icon'];
+    }
+
+    get type(): any {
+        return this._data['type'];
+    }
+
+    get gType(): any {
+        return this._data['gType'];
     }
 
 }
 
-/** item 数据项 */
+/** item ??? */
 export class _itemAspect {
     public objects: any;
 
-    get number(): any {
+    get id(): number {
         return this.objects['1'];
     }
 
-    get language(): string {
+    get name(): string {
         return _lang.t(this.objects['2']);
     }
 
-    get string(): any {
+    get icon(): string {
         return this.objects['3'];
+    }
+
+    get type(): any {
+        return JSON.parse(this.objects['2'] || '{}');
+    }
+
+    get gType(): any {
+        return JSON.parse(this.objects['3'] || '{}');
     }
 
 }
 
-/** item 数据映射 */
+/** item 鏁版嵁鏄犲皠 */
 export class _itemAspectMap {
     private _map: Map<number, _itemAspect> = new Map();
 
@@ -507,54 +195,54 @@ export class _item {
     }
 }
 
-/** equip 配置 */
-export class _equipConfig {
+/** equipType 閰嶇疆 */
+export class _equipTypeConfig {
     public _data: any;
 
-    get number(): any {
-        return this._data['number'];
+    get key(): any {
+        return this._data['key'];
     }
 
-    get number_1(): any {
-        return this._data['number'];
+    get value(): any {
+        return this._data['value'];
     }
 
 }
 
-/** equip 数据项 */
-export class _equipAspect {
+/** equipType ??? */
+export class _equipTypeAspect {
     public objects: any;
 
-    get number(): any {
-        return this.objects['1'];
+    get key(): any {
+        return this.objects['2'];
     }
 
-    get number_1(): any {
-        return JSON.parse(this.objects['2'] || '{}');
+    get value(): any {
+        return this.objects['3'];
     }
 
 }
 
-/** equip 数据映射 */
-export class _equipAspectMap {
-    private _map: Map<number, _equipAspect> = new Map();
+/** equipType 鏁版嵁鏄犲皠 */
+export class _equipTypeAspectMap {
+    private _map: Map<number, _equipTypeAspect> = new Map();
 
-    set(id: number, aspect: _equipAspect) {
+    set(id: number, aspect: _equipTypeAspect) {
         this._map.set(id, aspect);
     }
 
-    get(id: number): _equipAspect | undefined {
+    get(id: number): _equipTypeAspect | undefined {
         return this._map.get(id);
     }
 }
 
-/** equip */
-export class _equip {
-    public static Config: _equipConfig = new _equipConfig();
-    public static Aspect: _equipAspect[] = [];
-    public static AspectMap: _equipAspectMap = new _equipAspectMap();
+/** equipType */
+export class _equipType {
+    public static Config: _equipTypeConfig = new _equipTypeConfig();
+    public static Aspect: _equipTypeAspect[] = [];
+    public static AspectMap: _equipTypeAspectMap = new _equipTypeAspectMap();
 
-    public static findById(id: number): _equipAspect | undefined {
+    public static findById(id: number): _equipTypeAspect | undefined {
         return this.AspectMap.get(id);
     }
 
@@ -564,9 +252,163 @@ export class _equip {
         }
         if (jsonData.setAspect) {
             this.Aspect = [];
-            this.AspectMap = new _equipAspectMap();
+            this.AspectMap = new _equipTypeAspectMap();
             for (let i = 0; i < jsonData.setAspect.length; i++) {
-                let aspect = new _equipAspect();
+                let aspect = new _equipTypeAspect();
+                aspect.objects = JSON.parse(jsonData.setAspect[i]);
+                this.Aspect.push(aspect);
+                let id = aspect.objects['1'];
+                this.AspectMap.set(id, aspect);
+            }
+        }
+    }
+}
+
+/** growthData 閰嶇疆 */
+export class _growthDataConfig {
+    public _data: any;
+
+    get id(): any {
+        return this._data['id'];
+    }
+
+    get lv(): number {
+        return this._data['lv'];
+    }
+
+    get hp(): number {
+        return this._data['hp'];
+    }
+
+    get def(): number {
+        return this._data['def'];
+    }
+
+}
+
+/** growthData ??? */
+export class _growthDataAspect {
+    public objects: any;
+
+    get id(): any {
+        return JSON.parse(this.objects['1'] || '{}');
+    }
+
+    get lv(): number {
+        return this.objects['2'];
+    }
+
+    get hp(): number {
+        return this.objects['3'];
+    }
+
+    get def(): number {
+        return this.objects['4'];
+    }
+
+}
+
+/** growthData 鏁版嵁鏄犲皠 */
+export class _growthDataAspectMap {
+    private _map: Map<number, _growthDataAspect> = new Map();
+
+    set(id: number, aspect: _growthDataAspect) {
+        this._map.set(id, aspect);
+    }
+
+    get(id: number): _growthDataAspect | undefined {
+        return this._map.get(id);
+    }
+}
+
+/** growthData */
+export class _growthData {
+    public static Config: _growthDataConfig = new _growthDataConfig();
+    public static Aspect: _growthDataAspect[] = [];
+    public static AspectMap: _growthDataAspectMap = new _growthDataAspectMap();
+
+    public static findById(id: number): _growthDataAspect | undefined {
+        return this.AspectMap.get(id);
+    }
+
+    public static load(jsonData: any): void {
+        if (jsonData.setConfig) {
+            this.Config._data = jsonData.setConfig;
+        }
+        if (jsonData.setAspect) {
+            this.Aspect = [];
+            this.AspectMap = new _growthDataAspectMap();
+            for (let i = 0; i < jsonData.setAspect.length; i++) {
+                let aspect = new _growthDataAspect();
+                aspect.objects = JSON.parse(jsonData.setAspect[i]);
+                this.Aspect.push(aspect);
+                let id = aspect.objects['1'];
+                this.AspectMap.set(id, aspect);
+            }
+        }
+    }
+}
+
+/** growthType 閰嶇疆 */
+export class _growthTypeConfig {
+    public _data: any;
+
+    get key(): any {
+        return this._data['key'];
+    }
+
+    get value(): any {
+        return this._data['value'];
+    }
+
+}
+
+/** growthType ??? */
+export class _growthTypeAspect {
+    public objects: any;
+
+    get key(): any {
+        return this.objects['2'];
+    }
+
+    get value(): any {
+        return this.objects['3'];
+    }
+
+}
+
+/** growthType 鏁版嵁鏄犲皠 */
+export class _growthTypeAspectMap {
+    private _map: Map<number, _growthTypeAspect> = new Map();
+
+    set(id: number, aspect: _growthTypeAspect) {
+        this._map.set(id, aspect);
+    }
+
+    get(id: number): _growthTypeAspect | undefined {
+        return this._map.get(id);
+    }
+}
+
+/** growthType */
+export class _growthType {
+    public static Config: _growthTypeConfig = new _growthTypeConfig();
+    public static Aspect: _growthTypeAspect[] = [];
+    public static AspectMap: _growthTypeAspectMap = new _growthTypeAspectMap();
+
+    public static findById(id: number): _growthTypeAspect | undefined {
+        return this.AspectMap.get(id);
+    }
+
+    public static load(jsonData: any): void {
+        if (jsonData.setConfig) {
+            this.Config._data = jsonData.setConfig;
+        }
+        if (jsonData.setAspect) {
+            this.Aspect = [];
+            this.AspectMap = new _growthTypeAspectMap();
+            for (let i = 0; i < jsonData.setAspect.length; i++) {
+                let aspect = new _growthTypeAspect();
                 aspect.objects = JSON.parse(jsonData.setAspect[i]);
                 this.Aspect.push(aspect);
                 let id = aspect.objects['1'];

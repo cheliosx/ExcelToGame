@@ -15,7 +15,7 @@ class Program
         Logger.Info("   Supports: JSON / TypeScript / C#");
         Logger.Info("========================================");
 
-        var inputDir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
+        var inputDir = args.Length > 0 ? args[0] : AppContext.BaseDirectory;
         var outputDir = args.Length > 1 ? args[1] : Path.Combine(AppContext.BaseDirectory, "Output");
 
         var jsonDir = Path.Combine(outputDir, "Json");
@@ -64,7 +64,7 @@ class Program
 
         // 收集语言文本
         var langGenerator = new LanguageGenerator();
-        langGenerator.CollectLanguages(allSheets);
+        langGenerator.CollectLanguages(allSheets, reader.GetNextLanguageId());
 
         // 导出语言文件
         await langGenerator.ExportLanguageJson(Path.Combine(outputDir, "language.json"));

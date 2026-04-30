@@ -8,44 +8,56 @@ namespace ExcelToGame.Core;
 public class LanguageGenerator
 {
     private readonly Dictionary<string, string> _languageDict = new();
-    private int _languageId = 1000;
-    
-    public void CollectLanguages(List<SheetData> sheets)
+    private int _languageId = 1;
+
+    public void CollectLanguages(List<SheetData> sheets, int startLanguageId = 1)
     {
+        // 从传入的起始ID开始（由ExcelReader使用过的最大ID+1）
+        _languageId = startLanguageId;
+
         foreach (var sheet in sheets)
         {
+            // First process LanguageEntries collected by ExcelReader (for Config tables)
+            foreach (var entry in sheet.LanguageEntries)
+            {
+                _languageDict[entry.Key] = entry.Value;
+            }
+
+            // Then process normal table language fields
             foreach (var field in sheet.Fields)
             {
                 if (!field.IsLanguage) continue;
-                
+
                 foreach (var row in sheet.Rows)
                 {
                     if (!row.TryGetValue(field.Name, out var value)) continue;
-                    
+
                     var text = value?.ToString();
                     if (string.IsNullOrWhiteSpace(text)) continue;
-                    
+
+                    // Skip if value is already a language key (processed by ExcelReader)
+                    if (int.TryParse(text, out _)) continue;
+
                     var key = GenerateLanguageKey(sheet.SheetName, field.Name, row);
-                    
+
                     _languageDict[key] = text;
-                    
+
                     row[$"__lang_key_{field.Name}"] = key;
+                    
+                    // Replace the original value with the language key in the row
+                    row[field.Name] = key;
                 }
             }
         }
     }
-    
+
     private string GenerateLanguageKey(string sheetName, string fieldName, Dictionary<string, object?> row)
     {
-        if (row.TryGetValue("Id", out var idObj) || row.TryGetValue("id", out idObj) || row.TryGetValue("ID", out idObj))
-        {
-            var id = idObj?.ToString() ?? _languageId.ToString();
-            return $"{sheetName}_{id}_{fieldName}";
-        }
-        
-        return $"Text_{_languageId++}";
+        // 所有语言key统一使用数字格式
+        var key = $"{_languageId++}";
+        return key;
     }
-    
+
     public async Task ExportLanguageJson(string outputPath)
     {
         var json = JsonSerializer.Serialize(_languageDict, new JsonSerializerOptions
@@ -53,15 +65,15 @@ public class LanguageGenerator
             WriteIndented = true,
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         });
-        
+
         await FileUtil.WriteTextAsync(outputPath, json);
-        Logger.Success($"??????: {outputPath}");
+        Logger.Success($"????: {outputPath}");
     }
-    
+
     public async Task GenerateLanguageClass(string outputPath)
     {
         var sb = new StringBuilder();
-        
+
         sb.AppendLine("export class _language {");
         sb.AppendLine("    private _data: any;");
         sb.AppendLine();
@@ -86,11 +98,11 @@ public class LanguageGenerator
         sb.AppendLine("}");
         sb.AppendLine();
         sb.AppendLine("export const _lang = new _language();");
-        
+
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"生戝语言�? {outputPath}");
+        Logger.Success($"?????: {outputPath}");
     }
-    
+
     public string? GetLanguageKey(Dictionary<string, object?> row, string fieldName)
     {
         if (row.TryGetValue($"__lang_key_{fieldName}", out var key))
@@ -100,5 +112,3 @@ public class LanguageGenerator
         return null;
     }
 }
-
-

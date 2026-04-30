@@ -5,24 +5,49 @@ using System.Text.Json.Serialization;
 
 namespace Game.Config
 {
-    /// <summary>testArg 配置</summary>
-    public class testArgConfig
+    /// <summary>gameArg 閰嶇疆</summary>
+    public class gameArgConfig
     {
+        public int initHp { get; set; }
+        public List<object> initItems { get; set; }
+        public string gamePath { get; set; }
     }
 
-    /// <summary>testArg 数据项</summary>
-    public class testArgAspect
+    /// <summary>gameArg</summary>
+    public static class gameArg
     {
+        public static gameArgConfig Config { get; private set; } = new gameArgConfig();
+
+        public static void Load(string json)
+        {
+            Config = JsonSerializer.Deserialize<gameArgConfig>(json);
+        }
     }
 
-    /// <summary>testArg</summary>
-    public static class testArg
+    /// <summary>roleLevel 閰嶇疆</summary>
+    public class roleLevelConfig
     {
-        public static testArgConfig Config { get; private set; } = new testArgConfig();
-        public static List<testArgAspect> Aspects { get; private set; } = new List<testArgAspect>();
-        public static Dictionary<int, testArgAspect> AspectMap { get; private set; } = new Dictionary<int, testArgAspect>();
+        public int lv { get; set; }
+        public int hp { get; set; }
+        public int def { get; set; }
+    }
 
-        public static testArgAspect FindById(int id)
+    /// <summary>roleLevel 鏁版嵁椤?/summary>
+    public class roleLevelAspect
+    {
+        public int lv { get; set; }
+        public int hp { get; set; }
+        public int def { get; set; }
+    }
+
+    /// <summary>roleLevel</summary>
+    public static class roleLevel
+    {
+        public static roleLevelConfig Config { get; private set; } = new roleLevelConfig();
+        public static List<roleLevelAspect> Aspects { get; private set; } = new List<roleLevelAspect>();
+        public static Dictionary<int, roleLevelAspect> AspectMap { get; private set; } = new Dictionary<int, roleLevelAspect>();
+
+        public static roleLevelAspect FindById(int id)
         {
             return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
         }
@@ -32,295 +57,42 @@ namespace Game.Config
             var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
             if (data.TryGetValue("setConfig", out var config))
             {
-                Config = JsonSerializer.Deserialize<testArgConfig>(config.ToString());
+                Config = JsonSerializer.Deserialize<roleLevelConfig>(config.ToString());
             }
             if (data.TryGetValue("setAspect", out var aspects))
             {
-                Aspects = new List<testArgAspect>();
-                AspectMap = new Dictionary<int, testArgAspect>();
+                Aspects = new List<roleLevelAspect>();
+                AspectMap = new Dictionary<int, roleLevelAspect>();
                 var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
                 foreach (var aspectJson in aspectList)
                 {
-                    var aspect = JsonSerializer.Deserialize<testArgAspect>(aspectJson);
+                    var aspect = JsonSerializer.Deserialize<roleLevelAspect>(aspectJson);
                     Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
+                    if (!AspectMap.ContainsKey(aspect.id))
+                        AspectMap.Add(aspect.id, aspect);
                 }
             }
         }
     }
 
-    /// <summary>testKey 配置</summary>
-    public class testKeyConfig
-    {
-        public object number { get; set; }
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-        public object __ { get; set; }
-        public object number_3 { get; set; }
-    }
-
-    /// <summary>testKey 数据项</summary>
-    public class testKeyAspect
-    {
-        public object number { get; set; }
-        public string language => LanguageManager.GetText(_languageKey);
-        [JsonPropertyName("language")] private string _languageKey;
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-        public object __ { get; set; }
-        public string language_1 => LanguageManager.GetText(_language_1Key);
-        [JsonPropertyName("language")] private string _language_1Key;
-        public object number_3 { get; set; }
-    }
-
-    /// <summary>testKey</summary>
-    public static class testKey
-    {
-        public static testKeyConfig Config { get; private set; } = new testKeyConfig();
-        public static List<testKeyAspect> Aspects { get; private set; } = new List<testKeyAspect>();
-        public static Dictionary<int, testKeyAspect> AspectMap { get; private set; } = new Dictionary<int, testKeyAspect>();
-
-        public static testKeyAspect FindById(int id)
-        {
-            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
-        }
-
-        public static void Load(string json)
-        {
-            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (data.TryGetValue("setConfig", out var config))
-            {
-                Config = JsonSerializer.Deserialize<testKeyConfig>(config.ToString());
-            }
-            if (data.TryGetValue("setAspect", out var aspects))
-            {
-                Aspects = new List<testKeyAspect>();
-                AspectMap = new Dictionary<int, testKeyAspect>();
-                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
-                foreach (var aspectJson in aspectList)
-                {
-                    var aspect = JsonSerializer.Deserialize<testKeyAspect>(aspectJson);
-                    Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
-                }
-            }
-        }
-    }
-
-    /// <summary>testGroup 配置</summary>
-    public class testGroupConfig
-    {
-        public object number { get; set; }
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-        public object number_3 { get; set; }
-    }
-
-    /// <summary>testGroup 数据项</summary>
-    public class testGroupAspect
-    {
-        public object number { get; set; }
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-        public object number_3 { get; set; }
-    }
-
-    /// <summary>testGroup</summary>
-    public static class testGroup
-    {
-        public static testGroupConfig Config { get; private set; } = new testGroupConfig();
-        public static List<testGroupAspect> Aspects { get; private set; } = new List<testGroupAspect>();
-        public static Dictionary<int, testGroupAspect> AspectMap { get; private set; } = new Dictionary<int, testGroupAspect>();
-
-        public static testGroupAspect FindById(int id)
-        {
-            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
-        }
-
-        public static void Load(string json)
-        {
-            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (data.TryGetValue("setConfig", out var config))
-            {
-                Config = JsonSerializer.Deserialize<testGroupConfig>(config.ToString());
-            }
-            if (data.TryGetValue("setAspect", out var aspects))
-            {
-                Aspects = new List<testGroupAspect>();
-                AspectMap = new Dictionary<int, testGroupAspect>();
-                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
-                foreach (var aspectJson in aspectList)
-                {
-                    var aspect = JsonSerializer.Deserialize<testGroupAspect>(aspectJson);
-                    Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
-                }
-            }
-        }
-    }
-
-    /// <summary>testArray 配置</summary>
-    public class testArrayConfig
-    {
-        public object number { get; set; }
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-    }
-
-    /// <summary>testArray 数据项</summary>
-    public class testArrayAspect
-    {
-        public object number { get; set; }
-        public object number_1 { get; set; }
-        public object number_2 { get; set; }
-    }
-
-    /// <summary>testArray</summary>
-    public static class testArray
-    {
-        public static testArrayConfig Config { get; private set; } = new testArrayConfig();
-        public static List<testArrayAspect> Aspects { get; private set; } = new List<testArrayAspect>();
-        public static Dictionary<int, testArrayAspect> AspectMap { get; private set; } = new Dictionary<int, testArrayAspect>();
-
-        public static testArrayAspect FindById(int id)
-        {
-            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
-        }
-
-        public static void Load(string json)
-        {
-            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (data.TryGetValue("setConfig", out var config))
-            {
-                Config = JsonSerializer.Deserialize<testArrayConfig>(config.ToString());
-            }
-            if (data.TryGetValue("setAspect", out var aspects))
-            {
-                Aspects = new List<testArrayAspect>();
-                AspectMap = new Dictionary<int, testArrayAspect>();
-                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
-                foreach (var aspectJson in aspectList)
-                {
-                    var aspect = JsonSerializer.Deserialize<testArrayAspect>(aspectJson);
-                    Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
-                }
-            }
-        }
-    }
-
-    /// <summary>testSkill 配置</summary>
-    public class testSkillConfig
-    {
-        public object number { get; set; }
-    }
-
-    /// <summary>testSkill 数据项</summary>
-    public class testSkillAspect
-    {
-        public object number { get; set; }
-        public string language => LanguageManager.GetText(_languageKey);
-        [JsonPropertyName("language")] private string _languageKey;
-    }
-
-    /// <summary>testSkill</summary>
-    public static class testSkill
-    {
-        public static testSkillConfig Config { get; private set; } = new testSkillConfig();
-        public static List<testSkillAspect> Aspects { get; private set; } = new List<testSkillAspect>();
-        public static Dictionary<int, testSkillAspect> AspectMap { get; private set; } = new Dictionary<int, testSkillAspect>();
-
-        public static testSkillAspect FindById(int id)
-        {
-            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
-        }
-
-        public static void Load(string json)
-        {
-            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (data.TryGetValue("setConfig", out var config))
-            {
-                Config = JsonSerializer.Deserialize<testSkillConfig>(config.ToString());
-            }
-            if (data.TryGetValue("setAspect", out var aspects))
-            {
-                Aspects = new List<testSkillAspect>();
-                AspectMap = new Dictionary<int, testSkillAspect>();
-                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
-                foreach (var aspectJson in aspectList)
-                {
-                    var aspect = JsonSerializer.Deserialize<testSkillAspect>(aspectJson);
-                    Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
-                }
-            }
-        }
-    }
-
-    /// <summary>equipType 配置</summary>
-    public class equipTypeConfig
-    {
-    }
-
-    /// <summary>equipType 数据项</summary>
-    public class equipTypeAspect
-    {
-    }
-
-    /// <summary>equipType</summary>
-    public static class equipType
-    {
-        public static equipTypeConfig Config { get; private set; } = new equipTypeConfig();
-        public static List<equipTypeAspect> Aspects { get; private set; } = new List<equipTypeAspect>();
-        public static Dictionary<int, equipTypeAspect> AspectMap { get; private set; } = new Dictionary<int, equipTypeAspect>();
-
-        public static equipTypeAspect FindById(int id)
-        {
-            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
-        }
-
-        public static void Load(string json)
-        {
-            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-            if (data.TryGetValue("setConfig", out var config))
-            {
-                Config = JsonSerializer.Deserialize<equipTypeConfig>(config.ToString());
-            }
-            if (data.TryGetValue("setAspect", out var aspects))
-            {
-                Aspects = new List<equipTypeAspect>();
-                AspectMap = new Dictionary<int, equipTypeAspect>();
-                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
-                foreach (var aspectJson in aspectList)
-                {
-                    var aspect = JsonSerializer.Deserialize<equipTypeAspect>(aspectJson);
-                    Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
-                }
-            }
-        }
-    }
-
-    /// <summary>item 配置</summary>
+    /// <summary>item 閰嶇疆</summary>
     public class itemConfig
     {
-        public object number { get; set; }
-        public object @string { get; set; }
+        public int id { get; set; }
+        public string icon { get; set; }
+        public object type { get; set; }
+        public object gType { get; set; }
     }
 
-    /// <summary>item 数据项</summary>
+    /// <summary>item 鏁版嵁椤?/summary>
     public class itemAspect
     {
-        public object number { get; set; }
-        public string language => LanguageManager.GetText(_languageKey);
-        [JsonPropertyName("language")] private string _languageKey;
-        public object @string { get; set; }
+        public int id { get; set; }
+        public string name => LanguageManager.GetText(_nameKey);
+        [JsonPropertyName("name")] private string _nameKey;
+        public string icon { get; set; }
+        public object type { get; set; }
+        public object gType { get; set; }
     }
 
     /// <summary>item</summary>
@@ -351,35 +123,35 @@ namespace Game.Config
                 {
                     var aspect = JsonSerializer.Deserialize<itemAspect>(aspectJson);
                     Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
+                    if (!AspectMap.ContainsKey(aspect.id))
+                        AspectMap.Add(aspect.id, aspect);
                 }
             }
         }
     }
 
-    /// <summary>equip 配置</summary>
-    public class equipConfig
+    /// <summary>equipType 閰嶇疆</summary>
+    public class equipTypeConfig
     {
-        public object number { get; set; }
-        public object number_1 { get; set; }
+        public object key { get; set; }
+        public object value { get; set; }
     }
 
-    /// <summary>equip 数据项</summary>
-    public class equipAspect
+    /// <summary>equipType 鏁版嵁椤?/summary>
+    public class equipTypeAspect
     {
-        public object number { get; set; }
-        public object number_1 { get; set; }
+        public object key { get; set; }
+        public object value { get; set; }
     }
 
-    /// <summary>equip</summary>
-    public static class equip
+    /// <summary>equipType</summary>
+    public static class equipType
     {
-        public static equipConfig Config { get; private set; } = new equipConfig();
-        public static List<equipAspect> Aspects { get; private set; } = new List<equipAspect>();
-        public static Dictionary<int, equipAspect> AspectMap { get; private set; } = new Dictionary<int, equipAspect>();
+        public static equipTypeConfig Config { get; private set; } = new equipTypeConfig();
+        public static List<equipTypeAspect> Aspects { get; private set; } = new List<equipTypeAspect>();
+        public static Dictionary<int, equipTypeAspect> AspectMap { get; private set; } = new Dictionary<int, equipTypeAspect>();
 
-        public static equipAspect FindById(int id)
+        public static equipTypeAspect FindById(int id)
         {
             return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
         }
@@ -389,19 +161,121 @@ namespace Game.Config
             var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
             if (data.TryGetValue("setConfig", out var config))
             {
-                Config = JsonSerializer.Deserialize<equipConfig>(config.ToString());
+                Config = JsonSerializer.Deserialize<equipTypeConfig>(config.ToString());
             }
             if (data.TryGetValue("setAspect", out var aspects))
             {
-                Aspects = new List<equipAspect>();
-                AspectMap = new Dictionary<int, equipAspect>();
+                Aspects = new List<equipTypeAspect>();
+                AspectMap = new Dictionary<int, equipTypeAspect>();
                 var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
                 foreach (var aspectJson in aspectList)
                 {
-                    var aspect = JsonSerializer.Deserialize<equipAspect>(aspectJson);
+                    var aspect = JsonSerializer.Deserialize<equipTypeAspect>(aspectJson);
                     Aspects.Add(aspect);
-                    if (!AspectMap.ContainsKey(aspect.Id))
-                        AspectMap.Add(aspect.Id, aspect);
+                    if (!AspectMap.ContainsKey(aspect.id))
+                        AspectMap.Add(aspect.id, aspect);
+                }
+            }
+        }
+    }
+
+    /// <summary>growthData 閰嶇疆</summary>
+    public class growthDataConfig
+    {
+        public object id { get; set; }
+        public int lv { get; set; }
+        public int hp { get; set; }
+        public int def { get; set; }
+    }
+
+    /// <summary>growthData 鏁版嵁椤?/summary>
+    public class growthDataAspect
+    {
+        public object id { get; set; }
+        public int lv { get; set; }
+        public int hp { get; set; }
+        public int def { get; set; }
+    }
+
+    /// <summary>growthData</summary>
+    public static class growthData
+    {
+        public static growthDataConfig Config { get; private set; } = new growthDataConfig();
+        public static List<growthDataAspect> Aspects { get; private set; } = new List<growthDataAspect>();
+        public static Dictionary<int, growthDataAspect> AspectMap { get; private set; } = new Dictionary<int, growthDataAspect>();
+
+        public static growthDataAspect FindById(int id)
+        {
+            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
+        }
+
+        public static void Load(string json)
+        {
+            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            if (data.TryGetValue("setConfig", out var config))
+            {
+                Config = JsonSerializer.Deserialize<growthDataConfig>(config.ToString());
+            }
+            if (data.TryGetValue("setAspect", out var aspects))
+            {
+                Aspects = new List<growthDataAspect>();
+                AspectMap = new Dictionary<int, growthDataAspect>();
+                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
+                foreach (var aspectJson in aspectList)
+                {
+                    var aspect = JsonSerializer.Deserialize<growthDataAspect>(aspectJson);
+                    Aspects.Add(aspect);
+                    if (!AspectMap.ContainsKey(aspect.id))
+                        AspectMap.Add(aspect.id, aspect);
+                }
+            }
+        }
+    }
+
+    /// <summary>growthType 閰嶇疆</summary>
+    public class growthTypeConfig
+    {
+        public object key { get; set; }
+        public object value { get; set; }
+    }
+
+    /// <summary>growthType 鏁版嵁椤?/summary>
+    public class growthTypeAspect
+    {
+        public object key { get; set; }
+        public object value { get; set; }
+    }
+
+    /// <summary>growthType</summary>
+    public static class growthType
+    {
+        public static growthTypeConfig Config { get; private set; } = new growthTypeConfig();
+        public static List<growthTypeAspect> Aspects { get; private set; } = new List<growthTypeAspect>();
+        public static Dictionary<int, growthTypeAspect> AspectMap { get; private set; } = new Dictionary<int, growthTypeAspect>();
+
+        public static growthTypeAspect FindById(int id)
+        {
+            return AspectMap.TryGetValue(id, out var aspect) ? aspect : null;
+        }
+
+        public static void Load(string json)
+        {
+            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            if (data.TryGetValue("setConfig", out var config))
+            {
+                Config = JsonSerializer.Deserialize<growthTypeConfig>(config.ToString());
+            }
+            if (data.TryGetValue("setAspect", out var aspects))
+            {
+                Aspects = new List<growthTypeAspect>();
+                AspectMap = new Dictionary<int, growthTypeAspect>();
+                var aspectList = JsonSerializer.Deserialize<List<string>>(aspects.ToString());
+                foreach (var aspectJson in aspectList)
+                {
+                    var aspect = JsonSerializer.Deserialize<growthTypeAspect>(aspectJson);
+                    Aspects.Add(aspect);
+                    if (!AspectMap.ContainsKey(aspect.id))
+                        AspectMap.Add(aspect.id, aspect);
                 }
             }
         }

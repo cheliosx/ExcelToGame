@@ -9,6 +9,11 @@ namespace ExcelToGame.Core;
 
 public class ExcelReader
 {
+    private int _languageId = 1; // 全局语言ID计数器，从1开始
+    
+    // 获取下一个可用的语言ID（已被使用的最大ID + 1）
+    public int GetNextLanguageId() => _languageId;
+    
     public ExcelFileData? ReadExcelFile(string filePath)
     {
         try
@@ -74,15 +79,15 @@ public class ExcelReader
             // 读取各个数据页签
             foreach (var def in sheetDefs)
             {
-                // 尝试精确匹配，如果失败则尝试前缀匹配
-                var dataSheet = workbook.GetSheet(def.Name);
+                // 使用中文名查找sheet（因为sheet的实际名称是中文）
+                var dataSheet = workbook.GetSheet(def.ChineseName);
                 if (dataSheet == null)
                 {
-                    // 尝试前缀匹配（处理 testArg 匹配 testArg_测试参数表 的情况）
+                    // 尝试前缀匹配（处理 游戏参数表 匹配 游戏参数表_xxx 的情况）
                     for (int i = 0; i < workbook.NumberOfSheets; i++)
                     {
                         var sheetName = workbook.GetSheetAt(i).SheetName;
-                        if (sheetName.StartsWith(def.Name + "_", StringComparison.OrdinalIgnoreCase))
+                        if (sheetName.StartsWith(def.ChineseName + "_", StringComparison.OrdinalIgnoreCase))
                         {
                             dataSheet = workbook.GetSheetAt(i);
                             break;
@@ -184,19 +189,23 @@ public class ExcelReader
             if (exportFlag.Equals("END", StringComparison.OrdinalIgnoreCase))
                 break;
 
-            var file = GetCellValue(row.GetCell(fileCol));
-            var name = GetCellValue(row.GetCell(nameCol));
+            var chineseName = GetCellValue(row.GetCell(fileCol));  // 文件名列是中文名
+            var englishName = GetCellValue(row.GetCell(nameCol));      // 页签名列是英文名
 
-            if (string.IsNullOrWhiteSpace(file) || string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrWhiteSpace(englishName))
                 continue;
 
+            var typeValue = typeCol >= 0 ? GetCellValue(row.GetCell(typeCol)) : "";
+            Logger.Info($"[DEBUG] ReadMainSheet: {englishName}, typeCol={typeCol}, typeValue='{typeValue}'");
+            
             var def = new SheetDefinition
             {
-                File = file,
-                Name = name,
+                File = englishName,
+                Name = englishName,  // 使用英文名作为sheet名称
+                ChineseName = chineseName,
                 Client = clientCol >= 0 ? GetCellValue(row.GetCell(clientCol)) != "0" : true,
                 Server = serverCol >= 0 ? GetCellValue(row.GetCell(serverCol)) != "0" : true,
-                Type = typeCol >= 0 ? GetCellValue(row.GetCell(typeCol)) : "",
+                Type = typeValue,
                 Extend = extendCol >= 0 ? GetCellValue(row.GetCell(extendCol)) : null
             };
 
@@ -211,15 +220,55 @@ public class ExcelReader
         var sheetData = new SheetData
         {
             SheetName = def.Name,
+            ChineseName = def.ChineseName,
             FileName = def.File,
+            TableType = ParseTableType(def.Type),
             ExportToClient = def.Client,
             ExportToServer = def.Server,
             Extend = def.Extend
         };
 
-        var commentRow = sheet.GetRow(0);
-        var nameRow = sheet.GetRow(1);
-        var typeRow = sheet.GetRow(2);
+        // 查找关键行
+        int nameRowIdx = -1;      // 字段名行（包含"符号"或第一列是"符号"）
+        int typeRowIdx = -1;      // 数据类型行（包含"数据类型"）
+        int commentRowIdx = -1;   // 注释行（包含"注释"）
+        int chineseNameRowIdx = -1; // 中文名称行（包含"名称"）
+        int clientRowIdx = -1;    // 客户端导出行
+        int serverRowIdx = -1;    // 服务端导出行
+
+        for (int i = 0; i <= Math.Min(10, sheet.LastRowNum); i++)
+        {
+            var row = sheet.GetRow(i);
+            if (row == null) continue;
+
+            var firstCell = GetCellValue(row.GetCell(0));
+            if (string.IsNullOrWhiteSpace(firstCell)) continue;
+
+            if (firstCell == "符号")
+                nameRowIdx = i;
+            else if (firstCell == "数据类型")
+                typeRowIdx = i;
+            else if (firstCell == "注释")
+                commentRowIdx = i;
+            else if (firstCell == "名称")
+                chineseNameRowIdx = i;
+            else if (firstCell == "客户端")
+                clientRowIdx = i;
+            else if (firstCell == "服务端")
+                serverRowIdx = i;
+        }
+
+        // 如果没找到字段名行，使用第0行
+        if (nameRowIdx < 0) nameRowIdx = 0;
+        // 如果没找到类型行，使用字段名行的下一行
+        if (typeRowIdx < 0) typeRowIdx = nameRowIdx + 1;
+
+        var nameRow = sheet.GetRow(nameRowIdx);
+        var typeRow = sheet.GetRow(typeRowIdx);
+        var commentRow = commentRowIdx >= 0 ? sheet.GetRow(commentRowIdx) : null;
+        var chineseNameRow = chineseNameRowIdx >= 0 ? sheet.GetRow(chineseNameRowIdx) : null;
+        var clientRow = clientRowIdx >= 0 ? sheet.GetRow(clientRowIdx) : null;
+        var serverRow = serverRowIdx >= 0 ? sheet.GetRow(serverRowIdx) : null;
 
         if (nameRow == null || typeRow == null)
         {
@@ -227,7 +276,7 @@ public class ExcelReader
         }
 
         var fields = new List<FieldInfo>();
-        int col = 0;
+        int col = 1; // 从第1列开始（跳过"符号"列）
 
         while (true)
         {
@@ -236,52 +285,192 @@ public class ExcelReader
             if (string.IsNullOrWhiteSpace(fieldName) || fieldName.Equals("END", StringComparison.OrdinalIgnoreCase))
                 break;
 
-            if (col == 0)
+            // 跳过特殊列
+            if (fieldName == "注释" || fieldName == "客户端" || fieldName == "服务端" ||
+                fieldName == "数据类型" || fieldName == "符号" || fieldName == "名称")
             {
                 col++;
                 continue;
             }
 
             var fieldType = GetCellValue(typeRow.GetCell(col));
-            var comment = GetCellValue(commentRow?.GetCell(col));
+            var comment = commentRow != null ? GetCellValue(commentRow.GetCell(col)) : "";
+            var chineseName = chineseNameRow != null ? GetCellValue(chineseNameRow.GetCell(col)) : "";
+            var clientExport = clientRow != null ? GetCellValue(clientRow.GetCell(col)) : "YES";
+            var serverExport = serverRow != null ? GetCellValue(serverRow.GetCell(col)) : "YES";
 
             fields.Add(new FieldInfo
             {
                 Name = fieldName,
                 Type = fieldType,
-                Comment = comment,
-                ColumnIndex = col
+                Comment = chineseName, // 使用中文名作为注释
+                ColumnIndex = col,
+                ExportToClient = clientExport != "NO" && clientExport != "0",
+                ExportToServer = serverExport != "NO" && serverExport != "0"
             });
 
             col++;
         }
 
-        sheetData.Fields = fields;
+        // Config表特殊处理：key列的值是字段名，value列的值是字段值
+        bool isConfigTable = sheetData.TableType == TableType.Config ||
+                             def.Name.EndsWith("Arg", StringComparison.OrdinalIgnoreCase) ||
+                             def.Name.EndsWith("Config", StringComparison.OrdinalIgnoreCase);
 
-        for (int rowIdx = 3; rowIdx <= sheet.LastRowNum; rowIdx++)
+        int keyColIdx = -1;
+        int valueColIdx = -1;
+        int typeColIdx = -1;
+
+        if (isConfigTable)
         {
-            var row = sheet.GetRow(rowIdx);
-            if (row == null) continue;
-
-            var exportFlag = GetCellValue(row.GetCell(0));
-            if (exportFlag != "1" && !exportFlag.Equals("TRUE", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (exportFlag.Equals("END", StringComparison.OrdinalIgnoreCase))
-                break;
-
-            var rowData = new Dictionary<string, object?>();
-
-            foreach (var field in fields)
+            // 查找key和value列
+            for (int c = 1; c <= nameRow.LastCellNum; c++)
             {
-                var cellValue = GetCellValue(row.GetCell(field.ColumnIndex));
-                rowData[field.Name] = ParseValue(cellValue, field.Type);
+                var colName = GetCellValue(nameRow.GetCell(c));
+                if (colName.Equals("key", StringComparison.OrdinalIgnoreCase))
+                    keyColIdx = c;
+                else if (colName.Equals("value", StringComparison.OrdinalIgnoreCase))
+                    valueColIdx = c;
             }
 
-            sheetData.Rows.Add(rowData);
+            // 查找数据类型列（在nameRow中查找"数据类型"列标题）
+            for (int c = 1; c <= nameRow.LastCellNum; c++)
+            {
+                var colName = GetCellValue(nameRow.GetCell(c));
+                if (colName.Equals("数据类型", StringComparison.OrdinalIgnoreCase) ||
+                    colName.Equals("type", StringComparison.OrdinalIgnoreCase))
+                {
+                    typeColIdx = c;
+                    break;
+                }
+            }
+        }
+
+        if (isConfigTable && keyColIdx > 0 && valueColIdx > 0)
+        {
+            // Config表：每行是一个配置项，key列的值作为字段名，value列的值作为字段值
+            var configFields = new List<FieldInfo>();
+            var configRowData = new Dictionary<string, object?>();
+
+            // 数据从类型行的下一行开始
+            int dataStartRow = typeRowIdx + 1;
+            while (dataStartRow <= sheet.LastRowNum)
+            {
+                var row = sheet.GetRow(dataStartRow);
+                if (row == null) break;
+
+                var firstCell = GetCellValue(row.GetCell(0));
+                if (firstCell == "TRUE" || firstCell == "1")
+                {
+                    var key = GetCellValue(row.GetCell(keyColIdx));
+                    var value = GetCellValue(row.GetCell(valueColIdx));
+                    var fieldType = typeColIdx > 0 ? GetCellValue(row.GetCell(typeColIdx)) : "string";
+                    var comment = commentRow != null ? GetCellValue(commentRow.GetCell(keyColIdx)) : "";
+
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        configFields.Add(new FieldInfo
+                        {
+                            Name = key,
+                            Type = fieldType,
+                            Comment = comment,
+                            ColumnIndex = valueColIdx
+                        });
+
+                        // 处理language类型字段
+                        if (fieldType.Equals("language", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var langKey = $"{_languageId++}";
+                            sheetData.LanguageEntries.Add(new LanguageEntry
+                            {
+                                Key = langKey,
+                                Value = value,
+                                SheetName = sheetData.SheetName,
+                                RowId = dataStartRow,
+                                FieldName = key
+                            });
+                            configRowData[key] = langKey;
+                        }
+                        else
+                        {
+                            configRowData[key] = ParseValue(value, fieldType);
+                        }
+                    }
+                }
+                else if (firstCell == "END")
+                {
+                    break;
+                }
+
+                dataStartRow++;
+            }
+
+            sheetData.Fields = configFields;
+            if (configRowData.Count > 0)
+            {
+                sheetData.Rows.Add(configRowData);
+            }
+        }
+        else
+        {
+            // 普通表：使用解析的fields
+            sheetData.Fields = fields;
+
+            // 数据从类型行的下一行开始
+            int dataStartRow = typeRowIdx + 1;
+            // 跳过客户端、服务端、名称、注释等元数据行
+            while (dataStartRow <= sheet.LastRowNum)
+            {
+                var row = sheet.GetRow(dataStartRow);
+                if (row == null) break;
+
+                var firstCell = GetCellValue(row.GetCell(0));
+                // 如果遇到TRUE/1/FALSE/0/END，说明数据行开始
+                if (firstCell == "TRUE" || firstCell == "1" || firstCell == "FALSE" || firstCell == "0" || firstCell == "END")
+                    break;
+
+                dataStartRow++;
+            }
+
+            for (int rowIdx = dataStartRow; rowIdx <= sheet.LastRowNum; rowIdx++)
+            {
+                var row = sheet.GetRow(rowIdx);
+                if (row == null) continue;
+
+                var exportFlag = GetCellValue(row.GetCell(0));
+                if (exportFlag.Equals("END", StringComparison.OrdinalIgnoreCase))
+                    break;
+
+                if (exportFlag != "1" && !exportFlag.Equals("TRUE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var rowData = new Dictionary<string, object?>();
+
+                foreach (var field in fields)
+                {
+                    var cellValue = GetCellValue(row.GetCell(field.ColumnIndex));
+                    rowData[field.Name] = ParseValue(cellValue, field.Type);
+                }
+
+                sheetData.Rows.Add(rowData);
+            }
         }
 
         return sheetData;
+    }
+
+    private TableType ParseTableType(string typeStr)
+    {
+        // Support both Chinese and English type names
+        return typeStr.ToLower() switch
+        {
+            "参数表" or "config" => TableType.Config,
+            "数组表" or "aspect" or "array" => TableType.Aspect,
+            "主建表" or "normal" or "main" => TableType.Normal,
+            "枚举" or "枚举表" or "enum" => TableType.Enum,
+            "分组表" or "group" => TableType.Normal,
+            _ => TableType.Normal
+        };
     }
 
     private string CleanFileName(string fileName)
@@ -364,7 +553,31 @@ public class ExcelReader
                 content = content.Substring(1, content.Length - 2);
             }
 
-            return content.Split(',').Select(s => s.Trim()).ToList();
+            // 提取数组元素类型
+            var elementType = type.Substring(6, type.Length - 7).ToLower(); // array array<xxx> -> xxx
+            
+            var elements = content.Split(',').Select(s => s.Trim()).ToList();
+            var result = new List<object?>();
+            
+            foreach (var elem in elements)
+            {
+                if (string.IsNullOrWhiteSpace(elem))
+                {
+                    result.Add(null);
+                    continue;
+                }
+                
+                // 根据元素类型解析
+                result.Add(elementType switch
+                {
+                    "number" or "int" or "float" or "double" => TryParseNumber(elem),
+                    "bool" or "boolean" => elem == "1" || elem.Equals("true", StringComparison.OrdinalIgnoreCase),
+                    "string" or "language" => elem,
+                    _ => TryParseNumber(elem) // 对于自定义类型(如example.item)，尝试解析为数字
+                });
+            }
+            
+            return result;
         }
 
         return type switch
@@ -374,7 +587,19 @@ public class ExcelReader
             "double" => double.TryParse(value, out var doubleVal) ? doubleVal : 0.0,
             "bool" or "boolean" => value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase),
             "string" or "language" => value,
-            _ => value
+            _ => TryParseNumber(value)  // 对于自定义类型，尝试解析为数字
         };
+    }
+
+    private object? TryParseNumber(string value)
+    {
+        // 尝试解析为整数
+        if (int.TryParse(value, out var intVal))
+            return intVal;
+        // 尝试解析为浮点数
+        if (float.TryParse(value, out var floatVal))
+            return floatVal;
+        // 如果都失败，返回原始字符串
+        return value;
     }
 }

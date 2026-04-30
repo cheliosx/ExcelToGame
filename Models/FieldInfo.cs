@@ -6,10 +6,10 @@ public class FieldInfo
     public string Comment { get; set; } = string.Empty;
     public string Type { get; set; } = string.Empty;
     public int ColumnIndex { get; set; }
+    public bool ExportToClient { get; set; } = true;
+    public bool ExportToServer { get; set; } = true;
     
-    public bool IsLanguage => Type.Equals("language", StringComparison.OrdinalIgnoreCase) || 
-                               Name.Contains("language", StringComparison.OrdinalIgnoreCase) ||
-                               Name.Contains("lang", StringComparison.OrdinalIgnoreCase);
+    public bool IsLanguage => Type.Equals("language", StringComparison.OrdinalIgnoreCase);
     public bool IsArray => Type.StartsWith("array<", StringComparison.OrdinalIgnoreCase) && Type.EndsWith(">");
     public bool IsCustomType => Type.Contains(".") && !IsArray;
     
