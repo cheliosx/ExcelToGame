@@ -15,7 +15,7 @@ class Program
         Logger.Info("   Supports: JSON / TypeScript / C#");
         Logger.Info("========================================");
 
-        var inputDir = args.Length > 0 ? args[0] : AppContext.BaseDirectory;
+        var inputDir = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
         var outputDir = args.Length > 1 ? args[1] : Path.Combine(AppContext.BaseDirectory, "Output");
 
         var jsonDir = Path.Combine(outputDir, "Json");
@@ -50,7 +50,7 @@ class Program
 
         Logger.Info($"Successfully read {allExcelData.Count} Excel files");
 
-        // 收集所有Sheet用于类型检�?
+        // 收集所有Sheet用于类型检测
         var allSheets = allExcelData.SelectMany(e => e.DataSheets).ToList();
 
         var typeChecker = new TypeChecker();

@@ -13,4 +13,8 @@
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="bin\Debug\net8.0\Excel\example[表格示例].xlsx" />
+  </ItemGroup>
+
 </Project>
