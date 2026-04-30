@@ -67,26 +67,9 @@ public class ExcelReader
 
             excelData.SheetDefinitions = sheetDefs;
 
-            // 获取第一个sheet的file字段作为输出文件名
-            var firstDef = sheetDefs.FirstOrDefault();
-            if (firstDef != null && !string.IsNullOrWhiteSpace(firstDef.File))
-            {
-                var cleanedFile = CleanFileName(firstDef.File);
-                Logger.Info($"  File字段: '{firstDef.File}' -> 清理后: '{cleanedFile}'");
-                if (!string.IsNullOrWhiteSpace(cleanedFile))
-                {
-                    excelData.OutputName = cleanedFile;
-                }
-                else
-                {
-                    excelData.OutputName = CleanFileName(excelData.FileName);
-                    Logger.Info($"  使用Excel文件名: '{excelData.FileName}' -> '{excelData.OutputName}'");
-                }
-            }
-            else
-            {
-                excelData.OutputName = CleanFileName(excelData.FileName);
-            }
+            // 使用Excel文件名（去掉方括号及其中内容）作为输出文件名
+            excelData.OutputName = CleanFileName(excelData.FileName);
+            Logger.Info($"  使用Excel文件名: '{excelData.FileName}' -> '{excelData.OutputName}'");
 
             // 读取各个数据页签
             foreach (var def in sheetDefs)
