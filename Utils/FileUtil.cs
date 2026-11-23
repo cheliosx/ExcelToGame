@@ -10,6 +10,9 @@ public static class FileUtil
         }
     }
     
+    /// <summary>不带 BOM 的 UTF-8：JSON 带 BOM 会让 JSON.parse / 部分引擎直接解析失败</summary>
+    private static readonly System.Text.UTF8Encoding Utf8NoBom = new(false);
+
     public static async Task WriteTextAsync(string path, string content)
     {
         var dir = Path.GetDirectoryName(path);
@@ -17,8 +20,8 @@ public static class FileUtil
         {
             EnsureDirectory(dir);
         }
-        
-        await File.WriteAllTextAsync(path, content, System.Text.Encoding.UTF8);
+
+        await File.WriteAllTextAsync(path, content, Utf8NoBom);
     }
     
     public static List<string> GetExcelFiles(string directory)

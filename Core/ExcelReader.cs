@@ -102,7 +102,8 @@ public class ExcelReader
                 }
 
                 var sheetData = ReadDataSheet(dataSheet, def);
-                if (sheetData != null && sheetData.Rows.Count > 0)
+                // 枚举表没有数据行，只有枚举项
+                if (sheetData != null && (sheetData.Rows.Count > 0 || sheetData.EnumEntries.Count > 0))
                 {
                     excelData.DataSheets.Add(sheetData);
                 }
@@ -196,17 +197,21 @@ public class ExcelReader
                 continue;
 
             var typeValue = typeCol >= 0 ? GetCellValue(row.GetCell(typeCol)) : "";
-            Logger.Info($"[DEBUG] ReadMainSheet: {englishName}, typeCol={typeCol}, typeValue='{typeValue}'");
-            
+
+            // 继承已取消：每个页签独立成表，extend 列的填写只做提示
+            var parentName = extendCol >= 0 ? NullIfEmpty(GetCellValue(row.GetCell(extendCol))) : null;
+            if (parentName != null)
+            {
+                Logger.Warning($"页签 {englishName} 的继承声明 '{parentName}' 已被忽略：每张表按独立表导出，请改用 id 关联");
+            }
+
             var def = new SheetDefinition
             {
-                File = englishName,
-                Name = englishName,  // 使用英文名作为sheet名称
-                ChineseName = chineseName,
+                Name = englishName,          // 英文名作为导出的类型名
+                ChineseName = chineseName,   // Excel 中实际的页签名
                 Client = clientCol >= 0 ? GetCellValue(row.GetCell(clientCol)) != "0" : true,
                 Server = serverCol >= 0 ? GetCellValue(row.GetCell(serverCol)) != "0" : true,
-                Type = typeValue,
-                Extend = extendCol >= 0 ? GetCellValue(row.GetCell(extendCol)) : null
+                Type = typeValue
             };
 
             definitions.Add(def);
@@ -221,11 +226,10 @@ public class ExcelReader
         {
             SheetName = def.Name,
             ChineseName = def.ChineseName,
-            FileName = def.File,
-            TableType = ParseTableType(def.Type),
+            FileName = def.Name,
+            Kind = ParseTableKind(def.Type),
             ExportToClient = def.Client,
-            ExportToServer = def.Server,
-            Extend = def.Extend
+            ExportToServer = def.Server
         };
 
         // 查找关键行
@@ -275,6 +279,13 @@ public class ExcelReader
             return null;
         }
 
+        // 枚举表只有 key/value 两列，没有"数据类型"行，单独解析
+        if (sheetData.Kind == TableKind.Enum)
+        {
+            ReadEnumEntries(sheet, sheetData, nameRow);
+            return sheetData;
+        }
+
         var fields = new List<FieldInfo>();
         int col = 1; // 从第1列开始（跳过"符号"列）
 
@@ -303,7 +314,8 @@ public class ExcelReader
             {
                 Name = fieldName,
                 Type = fieldType,
-                Comment = chineseName, // 使用中文名作为注释
+                // 优先使用"名称"行的中文，缺失时退回"注释"行
+                Comment = string.IsNullOrWhiteSpace(chineseName) ? comment : chineseName,
                 ColumnIndex = col,
                 ExportToClient = clientExport != "NO" && clientExport != "0",
                 ExportToServer = serverExport != "NO" && serverExport != "0"
@@ -312,18 +324,17 @@ public class ExcelReader
             col++;
         }
 
-        // Config表特殊处理：key列的值是字段名，value列的值是字段值
-        bool isConfigTable = sheetData.TableType == TableType.Config ||
-                             def.Name.EndsWith("Arg", StringComparison.OrdinalIgnoreCase) ||
-                             def.Name.EndsWith("Config", StringComparison.OrdinalIgnoreCase);
+        // 参数表特殊处理：key 列的值是字段名，value 列的值是字段值
+        bool isParamTable = sheetData.Kind == TableKind.Param;
 
         int keyColIdx = -1;
         int valueColIdx = -1;
         int typeColIdx = -1;
+        int commentColIdx = -1;
 
-        if (isConfigTable)
+        if (isParamTable)
         {
-            // 查找key和value列
+            // 查找 key / value / 注释 列
             for (int c = 1; c <= nameRow.LastCellNum; c++)
             {
                 var colName = GetCellValue(nameRow.GetCell(c));
@@ -331,6 +342,8 @@ public class ExcelReader
                     keyColIdx = c;
                 else if (colName.Equals("value", StringComparison.OrdinalIgnoreCase))
                     valueColIdx = c;
+                else if (colName == "注释")
+                    commentColIdx = c;
             }
 
             // 查找数据类型列（在nameRow中查找"数据类型"列标题）
@@ -346,11 +359,17 @@ public class ExcelReader
             }
         }
 
-        if (isConfigTable && keyColIdx > 0 && valueColIdx > 0)
+        if (isParamTable && (keyColIdx <= 0 || valueColIdx <= 0))
         {
-            // Config表：每行是一个配置项，key列的值作为字段名，value列的值作为字段值
-            var configFields = new List<FieldInfo>();
-            var configRowData = new Dictionary<string, object?>();
+            Logger.Error($"参数表 {sheetData.SheetName} 缺少 key/value 列，请检查表头");
+            return null;
+        }
+
+        if (isParamTable)
+        {
+            // 参数表：每行是一个配置项，key 列的值作为字段名，value 列的值作为字段值
+            var paramFields = new List<FieldInfo>();
+            var paramValues = new Dictionary<string, object?>();
 
             // 数据从类型行的下一行开始
             int dataStartRow = typeRowIdx + 1;
@@ -365,11 +384,12 @@ public class ExcelReader
                     var key = GetCellValue(row.GetCell(keyColIdx));
                     var value = GetCellValue(row.GetCell(valueColIdx));
                     var fieldType = typeColIdx > 0 ? GetCellValue(row.GetCell(typeColIdx)) : "string";
-                    var comment = commentRow != null ? GetCellValue(commentRow.GetCell(keyColIdx)) : "";
+                    // 参数表的注释与配置项同行，位于"注释"列
+                    var comment = commentColIdx > 0 ? GetCellValue(row.GetCell(commentColIdx)) : "";
 
                     if (!string.IsNullOrWhiteSpace(key))
                     {
-                        configFields.Add(new FieldInfo
+                        paramFields.Add(new FieldInfo
                         {
                             Name = key,
                             Type = fieldType,
@@ -389,11 +409,11 @@ public class ExcelReader
                                 RowId = dataStartRow,
                                 FieldName = key
                             });
-                            configRowData[key] = langKey;
+                            paramValues[key] = langKey;
                         }
                         else
                         {
-                            configRowData[key] = ParseValue(value, fieldType);
+                            paramValues[key] = ParseValue(value, fieldType);
                         }
                     }
                 }
@@ -405,10 +425,10 @@ public class ExcelReader
                 dataStartRow++;
             }
 
-            sheetData.Fields = configFields;
-            if (configRowData.Count > 0)
+            sheetData.Fields = paramFields;
+            if (paramValues.Count > 0)
             {
-                sheetData.Rows.Add(configRowData);
+                sheetData.Rows.Add(paramValues);
             }
         }
         else
@@ -459,19 +479,69 @@ public class ExcelReader
         return sheetData;
     }
 
-    private TableType ParseTableType(string typeStr)
+    /// <summary>解析 main 页签的表格类型（中英文均可）</summary>
+    private static TableKind ParseTableKind(string typeStr)
     {
-        // Support both Chinese and English type names
-        return typeStr.ToLower() switch
+        return typeStr.Trim().ToLowerInvariant() switch
         {
-            "参数表" or "config" => TableType.Config,
-            "数组表" or "aspect" or "array" => TableType.Aspect,
-            "主建表" or "normal" or "main" => TableType.Normal,
-            "枚举" or "枚举表" or "enum" => TableType.Enum,
-            "分组表" or "group" => TableType.Normal,
-            _ => TableType.Normal
+            "参数表" or "param" or "config" => TableKind.Param,
+            "数组表" or "array" => TableKind.Array,
+            "分组表" or "group" => TableKind.Group,
+            "枚举" or "枚举表" or "enum" => TableKind.Enum,
+            "主建表" or "主键表" or "keyed" or "normal" or "main" => TableKind.Keyed,
+            _ => TableKind.Keyed
         };
     }
+
+    /// <summary>枚举表：key/value/注释 三列，逐行读取枚举项</summary>
+    private void ReadEnumEntries(ISheet sheet, SheetData sheetData, IRow nameRow)
+    {
+        int keyCol = -1, valueCol = -1, commentCol = -1;
+
+        for (int c = 1; c <= nameRow.LastCellNum; c++)
+        {
+            var header = GetCellValue(nameRow.GetCell(c));
+            if (header.Equals("key", StringComparison.OrdinalIgnoreCase)) keyCol = c;
+            else if (header.Equals("value", StringComparison.OrdinalIgnoreCase)) valueCol = c;
+            else if (header == "注释") commentCol = c;
+        }
+
+        if (keyCol < 0 || valueCol < 0)
+        {
+            Logger.Error($"枚举表 {sheetData.SheetName} 缺少 key/value 列");
+            return;
+        }
+
+        for (int rowIdx = 0; rowIdx <= sheet.LastRowNum; rowIdx++)
+        {
+            var row = sheet.GetRow(rowIdx);
+            if (row == null) continue;
+
+            var flag = GetCellValue(row.GetCell(0));
+            if (flag.Equals("END", StringComparison.OrdinalIgnoreCase)) break;
+            if (flag != "1" && !flag.Equals("TRUE", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var name = GetCellValue(row.GetCell(keyCol));
+            if (string.IsNullOrWhiteSpace(name)) continue;
+
+            var valueText = GetCellValue(row.GetCell(valueCol));
+            if (!int.TryParse(valueText, out var value))
+            {
+                Logger.Error($"枚举表 {sheetData.SheetName} 的枚举项 {name} 值非法: '{valueText}'");
+                continue;
+            }
+
+            sheetData.EnumEntries.Add(new EnumEntry
+            {
+                Name = name,
+                Value = value,
+                Comment = commentCol >= 0 ? GetCellValue(row.GetCell(commentCol)) : string.Empty
+            });
+        }
+    }
+
+    private static string? NullIfEmpty(string value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private string CleanFileName(string fileName)
     {
@@ -545,7 +615,7 @@ public class ExcelReader
 
         type = type.ToLower();
 
-        if (type.StartsWith("array<"))
+        if (IsArrayType(type))
         {
             var content = value.Trim();
             if (content.StartsWith("[") && content.EndsWith("]"))
@@ -553,9 +623,9 @@ public class ExcelReader
                 content = content.Substring(1, content.Length - 2);
             }
 
-            // 提取数组元素类型
-            var elementType = type.Substring(6, type.Length - 7).ToLower(); // array array<xxx> -> xxx
-            
+            // 提取数组元素类型；`[]` / `array` 视为元素类型不限
+            var elementType = GetElementType(type);
+
             var elements = content.Split(',').Select(s => s.Trim()).ToList();
             var result = new List<object?>();
             
@@ -589,6 +659,27 @@ public class ExcelReader
             "string" or "language" => value,
             _ => TryParseNumber(value)  // 对于自定义类型，尝试解析为数字
         };
+    }
+
+    private static bool IsArrayType(string type) =>
+        type is "[]" or "array" ||
+        type.StartsWith("array<", StringComparison.OrdinalIgnoreCase) ||
+        type.EndsWith("[]", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetElementType(string type)
+    {
+        if (type.StartsWith("array<", StringComparison.OrdinalIgnoreCase) && type.EndsWith('>'))
+        {
+            return type.Substring(6, type.Length - 7).Trim().ToLowerInvariant();
+        }
+
+        if (type.EndsWith("[]", StringComparison.OrdinalIgnoreCase))
+        {
+            var element = type[..^2].Trim();
+            return element.Length == 0 ? "any" : element;
+        }
+
+        return "any";
     }
 
     private object? TryParseNumber(string value)

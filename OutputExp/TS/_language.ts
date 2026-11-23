@@ -1,22 +1,27 @@
-﻿export class _language {
-    private _data: any;
+/***
+* 该文件由工具自动生成，请勿手动修改
+*/
+export class _language {
+    private _texts: Record<string, string> = {};
 
-    load(_data: any) {
-        this._data = _data;
+    public load(texts: Record<string, string>): void {
+        this._texts = texts || {};
     }
 
-    t(id: string): string {
-        let data = this._data[id];
-        if (!data) {
-            data = id;
+    /** 取多语言文本，缺失时回退为 key 本身 */
+    public t(key: string): string {
+        if (key === null || key === undefined) {
+            return "";
         }
-        return data;
+        const text = this._texts[key];
+        return text === undefined ? key : text;
     }
 
-    replaceTemplate(template: string, ...values: any[]): string {
-        return template.replace(/\$\{(\d+)\}/g, (match, index) => {
+    /** 把文本中的 {0} {1} 替换为参数 */
+    public replaceTemplate(template: string, ...values: any[]): string {
+        return template.replace(/\{(\d+)\}/g, (match, index) => {
             const idx = parseInt(index);
-            return idx < values.length ? values[idx] : match;
+            return idx < values.length ? String(values[idx]) : match;
         });
     }
 }

@@ -10,13 +10,18 @@ public class ExcelFileData
     public List<SheetDefinition> SheetDefinitions { get; set; } = new();
 }
 
+/// <summary>
+/// main 页签中的一行页签定义
+/// </summary>
 public class SheetDefinition
 {
-    public string File { get; set; } = string.Empty;
+    /// <summary>英文页签名，同时作为导出的类型名</summary>
     public string Name { get; set; } = string.Empty;
-    public string ChineseName { get; set; } = string.Empty;  // 中文名称
+
+    /// <summary>Excel 中实际的页签名（中文）</summary>
+    public string ChineseName { get; set; } = string.Empty;
+
     public bool Client { get; set; } = true;
     public bool Server { get; set; } = true;
     public string Type { get; set; } = string.Empty;
-    public string? Extend { get; set; }
 }

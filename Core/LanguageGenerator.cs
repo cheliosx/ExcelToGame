@@ -1,98 +1,99 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using ExcelToGame.Models;
 using ExcelToGame.Utils;
 
 namespace ExcelToGame.Core;
 
+/// <summary>
+/// 收集语言文本，导出 language.json 与 TS 端的 _language 访问器
+/// </summary>
 public class LanguageGenerator
 {
-    private readonly Dictionary<string, string> _languageDict = new();
-    private int _languageId = 1;
+    private readonly Dictionary<string, string> _texts = new();
+    private int _nextId = 1;
 
-    public void CollectLanguages(List<SheetData> sheets, int startLanguageId = 1)
+    public void CollectLanguages(List<SheetData> sheets, int startId = 1)
     {
-        // 从传入的起始ID开始（由ExcelReader使用过的最大ID+1）
-        _languageId = startLanguageId;
+        _nextId = startId;
 
         foreach (var sheet in sheets)
         {
-            // First process LanguageEntries collected by ExcelReader (for Config tables)
+            // 参数表在读取阶段已把 language 单元格替换成 key
             foreach (var entry in sheet.LanguageEntries)
             {
-                _languageDict[entry.Key] = entry.Value;
+                _texts[entry.Key] = entry.Value;
             }
 
-            // Then process normal table language fields
-            foreach (var field in sheet.Fields)
+            if (sheet.Kind == TableKind.Param)
             {
-                if (!field.IsLanguage) continue;
+                continue;
+            }
 
+            foreach (var field in sheet.Fields.Where(f => f.IsLanguage))
+            {
                 foreach (var row in sheet.Rows)
                 {
-                    if (!row.TryGetValue(field.Name, out var value)) continue;
+                    if (!row.TryGetValue(field.Name, out var value))
+                    {
+                        continue;
+                    }
 
                     var text = value?.ToString();
-                    if (string.IsNullOrWhiteSpace(text)) continue;
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        continue;
+                    }
 
-                    // Skip if value is already a language key (processed by ExcelReader)
-                    if (int.TryParse(text, out _)) continue;
-
-                    var key = GenerateLanguageKey(sheet.SheetName, field.Name, row);
-
-                    _languageDict[key] = text;
-
-                    row[$"__lang_key_{field.Name}"] = key;
-                    
-                    // Replace the original value with the language key in the row
+                    var key = $"{_nextId++}";
+                    _texts[key] = text;
                     row[field.Name] = key;
                 }
             }
         }
     }
 
-    private string GenerateLanguageKey(string sheetName, string fieldName, Dictionary<string, object?> row)
-    {
-        // 所有语言key统一使用数字格式
-        var key = $"{_languageId++}";
-        return key;
-    }
-
     public async Task ExportLanguageJson(string outputPath)
     {
-        var json = JsonSerializer.Serialize(_languageDict, new JsonSerializerOptions
+        var json = JsonSerializer.Serialize(_texts, new JsonSerializerOptions
         {
             WriteIndented = true,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         });
 
         await FileUtil.WriteTextAsync(outputPath, json);
-        Logger.Success($"????: {outputPath}");
+        Logger.Success($"生成语言文件: {outputPath}");
     }
 
     public async Task GenerateLanguageClass(string outputPath)
     {
         var sb = new StringBuilder();
 
+        sb.AppendLine("/***");
+        sb.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        sb.AppendLine("*/");
         sb.AppendLine("export class _language {");
-        sb.AppendLine("    private _data: any;");
+        sb.AppendLine("    private _texts: Record<string, string> = {};");
         sb.AppendLine();
-        sb.AppendLine("    load(_data: any) {");
-        sb.AppendLine("        this._data = _data;");
+        sb.AppendLine("    public load(texts: Record<string, string>): void {");
+        sb.AppendLine("        this._texts = texts || {};");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    t(id: string): string {");
-        sb.AppendLine("        let data = this._data[id];");
-        sb.AppendLine("        if (!data) {");
-        sb.AppendLine("            data = id;");
+        sb.AppendLine("    /** 取多语言文本，缺失时回退为 key 本身 */");
+        sb.AppendLine("    public t(key: string): string {");
+        sb.AppendLine("        if (key === null || key === undefined) {");
+        sb.AppendLine("            return \"\";");
         sb.AppendLine("        }");
-        sb.AppendLine("        return data;");
+        sb.AppendLine("        const text = this._texts[key];");
+        sb.AppendLine("        return text === undefined ? key : text;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    replaceTemplate(template: string, ...values: any[]): string {");
-        sb.AppendLine("        return template.replace(/\\$\\{(\\d+)\\}/g, (match, index) => {");
+        sb.AppendLine("    /** 把文本中的 {0} {1} 替换为参数 */");
+        sb.AppendLine("    public replaceTemplate(template: string, ...values: any[]): string {");
+        sb.AppendLine("        return template.replace(/\\{(\\d+)\\}/g, (match, index) => {");
         sb.AppendLine("            const idx = parseInt(index);");
-        sb.AppendLine("            return idx < values.length ? values[idx] : match;");
+        sb.AppendLine("            return idx < values.length ? String(values[idx]) : match;");
         sb.AppendLine("        });");
         sb.AppendLine("    }");
         sb.AppendLine("}");
@@ -100,15 +101,6 @@ public class LanguageGenerator
         sb.AppendLine("export const _lang = new _language();");
 
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"?????: {outputPath}");
-    }
-
-    public string? GetLanguageKey(Dictionary<string, object?> row, string fieldName)
-    {
-        if (row.TryGetValue($"__lang_key_{fieldName}", out var key))
-        {
-            return key?.ToString();
-        }
-        return null;
+        Logger.Success($"生成语言类: {outputPath}");
     }
 }
