@@ -43,10 +43,15 @@ export namespace example {
     }
     /** 角色等级    */
     export class roleLevel {
-        public _data: string;
-        protected _object: any[];
+        /** 原始 JSON 数据；懒解析完成后置为 null 以释放内存 */
+        public _data: string | null = null;
+        protected _object!: any[];
         private get objects() {
             if (!this._object) {
+                // 解析前 _data 必须存在，否则说明数据已释放，直接报错而不是解析出 null
+                if (this._data === null) {
+                    throw new Error("roleLevel: 原始数据已释放，无法解析");
+                }
                 this._object = JSON.parse(this._data);
                 this._data = null;
             }
@@ -63,10 +68,15 @@ export namespace example {
     }
     /** 道具    */
     export class item {
-        public _data: string;
-        protected _object: any[];
+        /** 原始 JSON 数据；懒解析完成后置为 null 以释放内存 */
+        public _data: string | null = null;
+        protected _object!: any[];
         protected get objects() {
             if (!this._object) {
+                // 解析前 _data 必须存在，否则说明数据已释放，直接报错而不是解析出 null
+                if (this._data === null) {
+                    throw new Error("item: 原始数据已释放，无法解析");
+                }
                 this._object = JSON.parse(this._data);
                 this._data = null;
             }
@@ -83,6 +93,20 @@ export namespace example {
         /** 道具图标    */
         get icon(): string {
             return this.objects[2];
+        }
+        /**
+         * 以装备视角复用当前数据。
+         * 已解析则直接共享解析结果，未解析则沿用原始字符串，
+         * 避免 equip 拿到已被置空的 _data 后解析出 null。
+         */
+        public asEquip(): equip {
+            let data = new equip();
+            if (this._object) {
+                data._object = this._object;
+            } else {
+                data._data = this._data;
+            }
+            return data;
         }
     }
     /**
@@ -103,10 +127,15 @@ export namespace example {
      * 成长类型
      */
     export class growthData {
-        public _data: string;
-        protected _object: any[];
+        /** 原始 JSON 数据；懒解析完成后置为 null 以释放内存 */
+        public _data: string | null = null;
+        protected _object!: any[];
         private get objects() {
             if (!this._object) {
+                // 解析前 _data 必须存在，否则说明数据已释放，直接报错而不是解析出 null
+                if (this._data === null) {
+                    throw new Error("growthData: 原始数据已释放，无法解析");
+                }
                 this._object = JSON.parse(this._data);
                 this._data = null;
             }
@@ -160,16 +189,16 @@ export class itemMap {
     }
     /** 获取道具 */
     public getItem(id: number): Readonly<example.item> {
-        return this._data.get(id);
+        return this._data.get(id)!;
     }
     /** 获取装备 */
     public getEquip(id: number): Readonly<example.equip> {
-        let temp = this._data.get(id);
+        let temp = this._data.get(id)!;
         if (temp instanceof example.equip) {
             return temp;
         } else {
-            let data = new example.equip();
-            data._data = temp._data;
+            // 复用当前道具的数据（已解析则共享解析结果），不能直接拷贝可能已被置空的 _data
+            let data = temp.asEquip();
             this._data.set(id, data);
             return data;
         }
@@ -194,7 +223,7 @@ export class growthDataGroup {
         }
     }
     public findGroupById(id: number): Readonly<example.growthData[]> {
-        return this._dataMap.get(id);
+        return this._dataMap.get(id)!;
     }
 }
 /** example[表格示例].xlsx    */
