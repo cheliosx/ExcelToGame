@@ -27,25 +27,22 @@ public class CodeGenerator
 
     // ---------------------------------------------------------------- JSON
 
-    /// <param name="splitRows">
-    /// true：行数据输出成字符串数组，一行一条，方便 diff；
-    /// false：行数据压成一个字符串，文件更小、解析峰值更低。
-    /// </param>
-    public async Task GenerateJson(ExcelFileData file, List<TableSchema> schemas, string outputDir, bool splitRows)
+    public async Task GenerateJson(ExcelFileData file, List<TableSchema> schemas, string outputDir)
     {
         var result = new Dictionary<string, object?>();
 
         // 枚举已经生成成代码里的 enum，不再重复写进 JSON
         foreach (var schema in schemas.Where(s => s.Kind != TableKind.Enum))
         {
+            // 参数表输出字段对象；其余表输出字符串数组，一行一条
             result[schema.Name] = schema.Kind == TableKind.Param
-                ? new Dictionary<string, object?> { ["fields"] = BuildParamFields(schema) }
-                : BuildTablePayload(schema, splitRows);
+                ? BuildParamFields(schema)
+                : BuildRowLines(schema);
         }
 
         var outputPath = Path.Combine(outputDir, $"{file.OutputName}.json");
         await FileUtil.WriteTextAsync(outputPath, ToReadableJson(result));
-        Logger.Success($"生成JSON: {outputPath}");
+        Logger.Success($"生成JSON: {Path.GetFileName(outputPath)}");
     }
 
     /// <summary>单值序列化选项：保留中文，不转义成 \uXXXX</summary>
@@ -125,36 +122,19 @@ public class CodeGenerator
     }
 
     /// <summary>
-    /// 行数据：每行是紧凑 JSON 数组。
-    /// splitRows = true 时输出 <c>rows: ["[1,2]", ...]</c>（一行一条，便于 diff）；
-    /// 否则拼成 <c>data: "[1,2]\n[3,4]"</c>（单块字符串，体积与解析峰值更小）。
+    /// 行数据：整表就是字符串数组，每项是一条紧凑 JSON 数组文本。
+    /// 客户端只在这一行被访问时才 JSON.parse，不会一次性展开成对象。
     /// </summary>
-    private static Dictionary<string, object?> BuildTablePayload(TableSchema schema, bool splitRows)
+    private static RowLines BuildRowLines(TableSchema schema)
     {
-        // 列名/下标、类型、行数都已固化到生成代码里，JSON 只放数据本身
-        var payload = new Dictionary<string, object?>();
+        var lines = new RowLines();
 
-        if (schema.Kind == TableKind.Keyed && schema.KeyColumn != null)
-        {
-            payload["ids"] = schema.Rows.Select(r => r[schema.KeyColumn.Index]).ToList();
-        }
-
-        var lines = new List<string>(schema.Rows.Count);
         foreach (var row in schema.Rows)
         {
-            lines.Add(JsonSerializer.Serialize(row, InlineJsonOptions));
+            lines.Value.Add(JsonSerializer.Serialize(row, InlineJsonOptions));
         }
 
-        if (splitRows)
-        {
-            payload["rows"] = new RowLines { Value = lines };
-        }
-        else
-        {
-            payload["data"] = string.Join("\n", lines);
-        }
-
-        return payload;
+        return lines;
     }
 
     /// <summary>逐行输出的行数据：序列化成多行字符串数组，其余数组仍保持单行</summary>
@@ -185,28 +165,38 @@ public class CodeGenerator
     public async Task GenerateTypeScript(ExcelFileData file, List<TableSchema> schemas, string outputDir)
     {
         var sb = new StringBuilder();
-        var ns = Ident(file.OutputName);
         var hasLanguage = schemas.Any(s => s.Columns.Any(c => c.Type.Kind == ValueKind.Language));
+        var usesEnums = UsesEnums(schemas);
 
         if (hasLanguage)
         {
             sb.AppendLine("import { _lang } from \"./_language\";");
+        }
+
+        // 枚举已统一生成到 _enums.ts 的 TableEnums 命名空间下
+        if (usesEnums)
+        {
+            sb.AppendLine("import { TableEnums } from \"./_enums\";");
+        }
+
+        // 主键表 / 分组表要从行文本里取首列数字
+        var needsParseKey = schemas.Any(s => s.Kind is TableKind.Keyed or TableKind.Group);
+        if (needsParseKey)
+        {
+            sb.AppendLine("import { _parseKey } from \"./_runtime\";");
+        }
+
+        if (hasLanguage || usesEnums || needsParseKey)
+        {
             sb.AppendLine();
         }
 
         sb.AppendLine("/***");
         sb.AppendLine("* 该文件由工具自动生成，请勿手动修改");
         sb.AppendLine("*/");
+        sb.AppendLine();
 
-        WriteTsRuntime(sb);
-        sb.AppendLine($"export namespace {ns} {{");
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Enum))
-        {
-            WriteTsEnum(sb, schema);
-        }
-
-        // 每个页签一个实体类，彼此独立
+        // 每个页签一个实体类（_表名），平铺导出，不再套 namespace
         foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
         {
             WriteTsEntity(sb, schema);
@@ -217,168 +207,304 @@ public class CodeGenerator
             WriteTsParam(sb, schema);
         }
 
-        sb.AppendLine("}");
-        sb.AppendLine();
-
         foreach (var schema in schemas.Where(s => s.Kind == TableKind.Keyed))
         {
-            WriteTsTable(sb, schema, ns);
+            WriteTsMap(sb, schema);
         }
 
         foreach (var schema in schemas.Where(s => s.Kind == TableKind.Array))
         {
-            WriteTsArrayList(sb, schema, ns);
+            WriteTsList(sb, schema);
         }
 
         foreach (var schema in schemas.Where(s => s.Kind == TableKind.Group))
         {
-            WriteTsGroup(sb, schema, ns);
+            WriteTsGroup(sb, schema);
         }
 
-        WriteTsRoot(sb, file, schemas, ns);
+        WriteTsRoot(sb, file, schemas);
 
         var outputPath = Path.Combine(outputDir, $"_{file.OutputName}.ts");
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"生成TS: {outputPath}");
+        Logger.Success($"生成TS: {Path.GetFileName(outputPath)}");
     }
 
-    /// <summary>共享运行时：行文本容器 + 主键索引（整表只在内存里存一份字符串）</summary>
+    /// <summary>共享运行时：从行文本里取首列数字，主键表与分组表都用它</summary>
     private static void WriteTsRuntime(StringBuilder sb)
     {
-        sb.AppendLine("/**");
-        sb.AppendLine(" * 行数据容器：整表只保留一份文本和行偏移表，");
-        sb.AppendLine(" * 访问某行时才解析该行，避免一次性创建几十万个数组。");
-        sb.AppendLine(" */");
-        sb.AppendLine("export class _TableData {");
-        sb.AppendLine("    private readonly _text: string;");
-        sb.AppendLine("    private readonly _offsets: Int32Array;");
-        sb.AppendLine();
-        sb.AppendLine("    constructor(text: string) {");
-        sb.AppendLine("        this._text = text || \"\";");
-        sb.AppendLine("        this._offsets = _TableData.splitLines(this._text);");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    public get count(): number {");
-        sb.AppendLine("        return this._offsets.length - 1;");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    /** 兼容两种 JSON 形态：data（单块文本）或 rows（逐行字符串数组） */");
-        sb.AppendLine("    public static fromPayload(payload: any): _TableData {");
-        sb.AppendLine("        if (payload === null || payload === undefined) {");
-        sb.AppendLine("            return new _TableData(\"\");");
-        sb.AppendLine("        }");
-        sb.AppendLine("        if (payload.data !== undefined && payload.data !== null) {");
-        sb.AppendLine("            return new _TableData(payload.data);");
-        sb.AppendLine("        }");
-        sb.AppendLine("        if (Array.isArray(payload.rows)) {");
-        sb.AppendLine("            return new _TableData(payload.rows.join(\"\\n\"));");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return new _TableData(\"\");");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    /** 解析第 index 行，只创建这一行的数组 */");
-        sb.AppendLine("    public parseRow(index: number): any[] {");
-        sb.AppendLine("        if (index < 0 || index >= this.count) {");
-        sb.AppendLine("            return [];");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return JSON.parse(this._text.substring(this._offsets[index], this._offsets[index + 1]));");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    /** 只读取行首的数值（分组键），不解析整行 */");
-        sb.AppendLine("    public readKey(index: number): number {");
-        sb.AppendLine("        let i = this._offsets[index];");
-        sb.AppendLine("        const end = this._offsets[index + 1];");
-        sb.AppendLine("        if (this._text.charCodeAt(i) === 91) {");
-        sb.AppendLine("            i++;");
-        sb.AppendLine("        }");
-        sb.AppendLine("        let sign = 1;");
-        sb.AppendLine("        let value = 0;");
-        sb.AppendLine("        let hit = false;");
-        sb.AppendLine("        for (; i < end; i++) {");
-        sb.AppendLine("            const code = this._text.charCodeAt(i);");
-        sb.AppendLine("            if (code >= 48 && code <= 57) {");
-        sb.AppendLine("                value = value * 10 + (code - 48);");
-        sb.AppendLine("                hit = true;");
-        sb.AppendLine("            } else if (code === 45) {");
-        sb.AppendLine("                sign = -1;");
-        sb.AppendLine("            } else if (hit) {");
-        sb.AppendLine("                break;");
-        sb.AppendLine("            }");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return sign * value;");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    private static splitLines(text: string): Int32Array {");
-        sb.AppendLine("        if (text.length === 0) {");
-        sb.AppendLine("            return Int32Array.from([0]);");
-        sb.AppendLine("        }");
-        sb.AppendLine("        const offsets: number[] = [0];");
-        sb.AppendLine("        let index = text.indexOf(\"\\n\");");
-        sb.AppendLine("        while (index >= 0) {");
-        sb.AppendLine("            offsets.push(index + 1);");
-        sb.AppendLine("            index = text.indexOf(\"\\n\", index + 1);");
-        sb.AppendLine("        }");
-        sb.AppendLine("        offsets.push(text.length);");
-        sb.AppendLine("        return Int32Array.from(offsets);");
-        sb.AppendLine("    }");
-        sb.AppendLine("}");
-        sb.AppendLine();
-        sb.AppendLine("/** 主键索引：ids 已升序时直接二分，否则额外维护行号排序表 */");
-        sb.AppendLine("export class _TableIndex {");
-        sb.AppendLine("    private readonly _ids: number[] = [];");
-        sb.AppendLine("    private readonly _order: Int32Array;");
-        sb.AppendLine();
-        sb.AppendLine("    constructor(ids: number[]) {");
-        sb.AppendLine("        this._ids = ids || [];");
-        sb.AppendLine("        this._order = _TableIndex.buildOrder(this._ids);");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    /** 返回行号，找不到返回 -1 */");
-        sb.AppendLine("    public indexOf(id: number): number {");
-        sb.AppendLine("        let low = 0;");
-        sb.AppendLine("        let high = this._ids.length - 1;");
-        sb.AppendLine("        while (low <= high) {");
-        sb.AppendLine("            const mid = (low + high) >> 1;");
-        sb.AppendLine("            const row = this._order.length === 0 ? mid : this._order[mid];");
-        sb.AppendLine("            const value = this._ids[row];");
-        sb.AppendLine("            if (value === id) {");
-        sb.AppendLine("                return row;");
-        sb.AppendLine("            }");
-        sb.AppendLine("            if (value < id) {");
-        sb.AppendLine("                low = mid + 1;");
-        sb.AppendLine("            } else {");
-        sb.AppendLine("                high = mid - 1;");
-        sb.AppendLine("            }");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return -1;");
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    private static buildOrder(ids: number[]): Int32Array {");
-        sb.AppendLine("        for (let i = 1; i < ids.length; i++) {");
-        sb.AppendLine("            if (ids[i] <= ids[i - 1]) {");
-        sb.AppendLine("                const order = new Int32Array(ids.length);");
-        sb.AppendLine("                for (let j = 0; j < order.length; j++) {");
-        sb.AppendLine("                    order[j] = j;");
-        sb.AppendLine("                }");
-        sb.AppendLine("                order.sort((a, b) => ids[a] - ids[b]);");
-        sb.AppendLine("                return order;");
-        sb.AppendLine("            }");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return new Int32Array(0);");
-        sb.AppendLine("    }");
+        sb.AppendLine("/** 从 \"[1,...]\" 里取首列数字（主键 / 分组键） */");
+        sb.AppendLine("export function _parseKey(row: string): number {");
+        sb.AppendLine("    const end = row.indexOf(\",\");");
+        sb.AppendLine("    return parseInt(row.substring(1, end < 0 ? row.length : end));");
         sb.AppendLine("}");
         sb.AppendLine();
     }
 
-    private void WriteTsEnum(StringBuilder sb, TableSchema schema)
-    {
-        var name = Ident(schema.Name);
+    /// <summary>本文件的实体是否引用了枚举（决定要不要 import ./_enums）</summary>
+    private static bool UsesEnums(List<TableSchema> schemas) =>
+        schemas.Any(s => s.Columns.Any(c => c.Type.Kind == ValueKind.Enum));
 
-        sb.AppendLine($"    /** {schema.Sheet.ChineseName} */");
+    /// <summary>生成 TS 端统一入口 ExcelData.ts，登记目录下所有表格文件</summary>
+    public async Task GenerateEntry(List<ExcelFileData> files, string tsDir)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("import { _lang } from \"./_language\";");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"import {{ _{name} }} from \"./_{name}\";");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("/***");
+        sb.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        sb.AppendLine("*/");
+        sb.AppendLine("/** 单个表格文件的数据入口需要实现的契约 */");
+        sb.AppendLine("interface ITableContainer {");
+        sb.AppendLine("    load(data: any): void;");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("export class ExcelData {");
+        sb.AppendLine("    /** 当前语言码，如 zh-Hans / en-US */");
+        sb.AppendLine("    protected _langCode: string = \"zh-Hans\";");
+        sb.AppendLine();
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"    protected readonly _{name}: _{name} = new _{name}();");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("    /** 文件名 -> 数据入口 */");
+        sb.AppendLine("    protected readonly _files: Record<string, ITableContainer> = {");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"        {name.ToLowerInvariant()}: this._{name},");
+        }
+
+        sb.AppendLine("    };");
+        sb.AppendLine();
+        sb.AppendLine("    /**");
+        sb.AppendLine("     * 加载一个表格文件的 JSON（文件名不区分大小写）");
+        sb.AppendLine("     * @param fileName 文件名（输出名，如 \"example\"）");
+        sb.AppendLine("     * @param data 该文件对应的 JSON");
+        sb.AppendLine("     */");
+        sb.AppendLine("    public init(fileName: string, data: any): void {");
+        sb.AppendLine("        const file = this._files[fileName.toLowerCase()];");
+        sb.AppendLine("        if (file === undefined) {");
+        sb.AppendLine("            throw new Error(`ExcelData: 未找到配置文件 \"${fileName}\"`);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        file.load(data);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /**");
+        sb.AppendLine("     * 初始化多语言");
+        sb.AppendLine("     * @param lang 语言码，如 \"zh-Hans\" / \"en-US\"");
+        sb.AppendLine("     * @param texts 该语言的 key -> 文本");
+        sb.AppendLine("     */");
+        sb.AppendLine("    public initLanguage(lang: string, texts: Record<string, string>): void {");
+        sb.AppendLine("        this._langCode = lang;");
+        sb.AppendLine("        _lang.load(texts);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /** 当前语言码 */");
+        sb.AppendLine("    public get lang(): string {");
+        sb.AppendLine("        return this._langCode;");
+        sb.AppendLine("    }");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine();
+            sb.AppendLine($"    public get {name}(): _{name} {{");
+            sb.AppendLine($"        return this._{name};");
+            sb.AppendLine("    }");
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        var outputPath = Path.Combine(tsDir, "ExcelData.ts");
+        await FileUtil.WriteTextAsync(outputPath, sb.ToString());
+        Logger.Success($"生成TS入口: {Path.GetFileName(outputPath)}");
+    }
+
+    /// <summary>生成 C# 端统一入口 ExcelData.cs，登记目录下所有表格文件</summary>
+    public async Task GenerateCsEntry(List<ExcelFileData> files, string csDir)
+    {
+        var sb = new StringBuilder();
+
+        sb.AppendLine("// <auto-generated>");
+        sb.AppendLine("//     表格统一入口，由 ExcelToGame 生成，请勿手动修改");
+        sb.AppendLine("// </auto-generated>");
+        sb.AppendLine("#nullable disable");
+        sb.AppendLine("using System;");
+        sb.AppendLine();
+        sb.AppendLine("namespace Game.Config");
+        sb.AppendLine("{");
+        sb.AppendLine("    /// <summary>所有表格文件的统一入口</summary>");
+        sb.AppendLine("    public sealed class ExcelData");
+        sb.AppendLine("    {");
+
+        foreach (var file in files)
+        {
+            var type = Pascal(file.OutputName) + "Config";
+            sb.AppendLine($"        public {type} {CsFileMember(file)} {{ get; }} = new {type}();");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>当前语言码，如 zh-Hans / en-US</summary>");
+        sb.AppendLine("        public string Lang { get; private set; } = \"zh-Hans\";");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>初始化多语言</summary>");
+        sb.AppendLine("        /// <param name=\"lang\">语言码，如 \"zh-Hans\" / \"en-US\"</param>");
+        sb.AppendLine("        /// <param name=\"json\">该语言的 key -> 文本</param>");
+        sb.AppendLine("        public void InitLanguage(string lang, string json)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            Lang = lang;");
+        sb.AppendLine("            LanguageManager.Load(json);");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>按文件名加载一个表格的 JSON（文件名不区分大小写）</summary>");
+        sb.AppendLine("        /// <param name=\"fileName\">文件名（输出名，如 \"example\"）</param>");
+        sb.AppendLine("        /// <param name=\"json\">该文件对应的 JSON</param>");
+        sb.AppendLine("        public void Load(string fileName, string json)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            switch (fileName.ToLowerInvariant())");
+        sb.AppendLine("            {");
+
+        foreach (var file in files)
+        {
+            var key = Ident(file.OutputName).ToLowerInvariant();
+            sb.AppendLine($"                case \"{key}\": {CsFileMember(file)}.Load(json); break;");
+        }
+
+        sb.AppendLine("                default:");
+        sb.AppendLine("                    throw new ArgumentException(\"ExcelData: 未找到配置文件 \" + fileName);");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+
+        var outputPath = Path.Combine(csDir, "ExcelData.cs");
+        await FileUtil.WriteTextAsync(outputPath, sb.ToString());
+        Logger.Success($"生成C#入口: {Path.GetFileName(outputPath)}");
+    }
+
+    /// <summary>统一入口里的属性名，与 TS 的 getter 同名（example / attr）</summary>
+    private static string CsFileMember(ExcelFileData file) =>
+        SafeCsIdentifier(Pascal(file.OutputName));
+
+    /// <summary>TS 共用运行时：输出 TS/_runtime.ts</summary>
+    public async Task GenerateTsRuntime(string tsDir)
+    {
+        var ts = new StringBuilder();
+        ts.AppendLine("/***");
+        ts.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        ts.AppendLine("*/");
+        WriteTsRuntime(ts);
+
+        var tsPath = Path.Combine(tsDir, "_runtime.ts");
+        await FileUtil.WriteTextAsync(tsPath, ts.ToString());
+        Logger.Success($"生成TS运行时: {Path.GetFileName(tsPath)}");
+    }
+
+    /// <summary>C# 共用运行时：输出 CSharp/Runtime.cs</summary>
+    public async Task GenerateCsRuntime(string csDir)
+    {
+        var cs = new StringBuilder();
+        cs.AppendLine("// <auto-generated>");
+        cs.AppendLine("//     运行时，由 ExcelToGame 生成，请勿手动修改");
+        cs.AppendLine("// </auto-generated>");
+        cs.AppendLine("#nullable disable");
+        cs.AppendLine("using System;");
+        cs.AppendLine("using System.Collections.Generic;");
+        cs.AppendLine("using System.Text.Json;");
+        cs.AppendLine();
+        cs.AppendLine("namespace Game.Config");
+        cs.AppendLine("{");
+        WriteCsRuntime(cs);
+        cs.AppendLine("}");
+
+        var csPath = Path.Combine(csDir, "Runtime.cs");
+        await FileUtil.WriteTextAsync(csPath, cs.ToString());
+        Logger.Success($"生成C#运行时: {Path.GetFileName(csPath)}");
+    }
+
+    /// <summary>所有枚举统一输出到 TS/_enums.ts</summary>
+    public async Task GenerateTsEnums(List<SheetData> sheets, string tsDir)
+    {
+        var enums = sheets.Where(s => s.Kind == TableKind.Enum).ToList();
+        if (enums.Count == 0)
+        {
+            Logger.Warning("没有枚举表，跳过枚举文件生成");
+            return;
+        }
+
+        var ts = new StringBuilder();
+        ts.AppendLine("/***");
+        ts.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        ts.AppendLine("*/");
+        ts.AppendLine("/**");
+        ts.AppendLine(" * 表格导出的枚举统一放在 TableEnums 命名空间下，");
+        ts.AppendLine(" * 与手写枚举区分开，也避免命名冲突。");
+        ts.AppendLine(" */");
+        ts.AppendLine("export namespace TableEnums {");
+        foreach (var sheet in enums)
+        {
+            AppendTsEnum(ts, sheet);
+        }
+
+        ts.AppendLine("}");
+
+        var tsPath = Path.Combine(tsDir, "_enums.ts");
+        await FileUtil.WriteTextAsync(tsPath, ts.ToString());
+        Logger.Success($"生成TS枚举: {Path.GetFileName(tsPath)}");
+    }
+
+    /// <summary>所有枚举统一输出到 CSharp/Enums.cs</summary>
+    public async Task GenerateCsEnums(List<SheetData> sheets, string csDir)
+    {
+        var enums = sheets.Where(s => s.Kind == TableKind.Enum).ToList();
+        if (enums.Count == 0)
+        {
+            return;
+        }
+
+        var cs = new StringBuilder();
+        cs.AppendLine("// <auto-generated>");
+        cs.AppendLine("//     枚举定义，由 ExcelToGame 生成，请勿手动修改");
+        cs.AppendLine("// </auto-generated>");
+        cs.AppendLine("#nullable disable");
+        cs.AppendLine();
+        cs.AppendLine("namespace Game.Config");
+        cs.AppendLine("{");
+        foreach (var sheet in enums)
+        {
+            AppendCsEnum(cs, sheet);
+        }
+
+        cs.AppendLine("}");
+
+        var csPath = Path.Combine(csDir, "Enums.cs");
+        await FileUtil.WriteTextAsync(csPath, cs.ToString());
+        Logger.Success($"生成C#枚举: {Path.GetFileName(csPath)}");
+    }
+
+    private static void AppendTsEnum(StringBuilder sb, SheetData sheet)
+    {
+        var name = Ident(sheet.SheetName);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        sb.AppendLine($"    /** {sheet.ChineseName} */");
         sb.AppendLine($"    export enum {name} {{");
 
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in schema.Sheet.EnumEntries)
+        foreach (var entry in sheet.EnumEntries)
         {
             var member = UniqueName(Ident(entry.Name), used);
             if (!string.IsNullOrWhiteSpace(entry.Comment))
@@ -393,29 +519,57 @@ public class CodeGenerator
         sb.AppendLine();
     }
 
+    private static void AppendCsEnum(StringBuilder sb, SheetData sheet)
+    {
+        var name = Pascal(sheet.SheetName);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        sb.AppendLine($"    /// <summary>{sheet.ChineseName}</summary>");
+        sb.AppendLine($"    public enum {name}");
+        sb.AppendLine("    {");
+
+        foreach (var entry in sheet.EnumEntries)
+        {
+            var member = UniqueName(SafeCsIdentifier(Pascal(entry.Name)), used);
+            sb.AppendLine($"        /// <summary>{entry.Comment}</summary>");
+            sb.AppendLine($"        {member} = {entry.Value},");
+        }
+
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
     private void WriteTsEntity(StringBuilder sb, TableSchema schema)
     {
-        var className = Ident(schema.Name);
+        var className = "_" + Ident(schema.Name);
         var fieldNames = BuildTsFieldNames(schema);
 
-        sb.AppendLine($"    /** {schema.Sheet.ChineseName} */");
-        sb.AppendLine($"    export class {className} {{");
-        sb.AppendLine("        private readonly _table: _TableData;");
-        sb.AppendLine("        private readonly _row: number;");
-        sb.AppendLine("        private _values: any[] | null = null;");
+        sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
+        sb.AppendLine($"export class {className} {{");
+        sb.AppendLine("    /** 原始行文本；首次解析后置空以释放内存 */");
+        sb.AppendLine("    public _data: string | null;");
+        sb.AppendLine("    private _object: any[] | null = null;");
         sb.AppendLine();
-        sb.AppendLine("        constructor(table: _TableData, row: number) {");
-        sb.AppendLine("            this._table = table;");
-        sb.AppendLine("            this._row = row;");
-        sb.AppendLine("        }");
+        sb.AppendLine("    constructor(data: string) {");
+        sb.AppendLine("        this._data = data;");
+        sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("        /** 首次访问字段时才解析本行 */");
-        sb.AppendLine("        private _parse(): any[] {");
-        sb.AppendLine("            if (this._values === null) {");
-        sb.AppendLine("                this._values = this._table.parseRow(this._row);");
+        sb.AppendLine("    /** 首次访问字段时才解析本行 */");
+        sb.AppendLine("    private get objects(): any[] {");
+        sb.AppendLine("        let values = this._object;");
+        sb.AppendLine("        if (values === null) {");
+        sb.AppendLine("            const data = this._data;");
+        sb.AppendLine("            if (data === null) {");
+        sb.AppendLine($"                throw new Error(\"{className}: 原始数据已释放，无法再解析\");");
         sb.AppendLine("            }");
-        sb.AppendLine("            return this._values;");
+        sb.AppendLine();
+        sb.AppendLine("            values = JSON.parse(data) as any[];");
+        sb.AppendLine("            this._object = values;");
+        sb.AppendLine("            this._data = null;");
         sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        return values;");
+        sb.AppendLine("    }");
 
         foreach (var column in schema.Columns)
         {
@@ -423,202 +577,221 @@ public class CodeGenerator
             var member = fieldNames[Key(column)];
 
             sb.AppendLine();
-            sb.AppendLine($"        /** {CommentOf(field)} */");
-            sb.AppendLine($"        get {member}(): {TsTypeOf(column.Type)} {{");
-            sb.AppendLine($"            return {TsValueOf(column)};");
-            sb.AppendLine("        }");
+            sb.AppendLine($"    /** {CommentOf(field)} */");
+            sb.AppendLine($"    get {member}(): {TsTypeOf(column.Type)} {{");
+            sb.AppendLine($"        return {TsValueOf(column)};");
+            sb.AppendLine("    }");
         }
 
-        sb.AppendLine("    }");
+        sb.AppendLine("}");
         sb.AppendLine();
     }
 
     private void WriteTsParam(StringBuilder sb, TableSchema schema)
     {
-        var className = Ident(schema.Name);
+        var className = "_" + Ident(schema.Name);
         var fieldNames = BuildTsFieldNames(schema);
 
-        sb.AppendLine($"    /** {schema.Sheet.ChineseName} */");
-        sb.AppendLine($"    export class {className} {{");
-        sb.AppendLine("        private _fields: Record<string, any> = {};");
-        sb.AppendLine();
-        sb.AppendLine("        public load(data: any): void {");
-        sb.AppendLine("            this._fields = data.fields || {};");
-        sb.AppendLine("        }");
+        sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
+        sb.AppendLine($"export class {className} {{");
+        sb.AppendLine("    public _data: any;");
 
         foreach (var column in schema.Columns)
         {
             var field = column.Field;
             var member = fieldNames[Key(column)];
+            var access = "this._data" + FieldAccess(field.Name);
 
             sb.AppendLine();
-            sb.AppendLine($"        /** {CommentOf(field)} */");
-            sb.AppendLine($"        get {member}(): {TsTypeOf(column.Type)} {{");
+            sb.AppendLine($"    /** {CommentOf(field)} */");
+            sb.AppendLine($"    get {member}(): {TsTypeOf(column.Type)} {{");
             sb.AppendLine(column.Type.Kind == ValueKind.Language
-                ? $"            return _lang.t(this._fields[\"{column.Name}\"]);"
-                : $"            return this._fields[\"{column.Name}\"];");
-            sb.AppendLine("        }");
-        }
-
-        sb.AppendLine("    }");
-        sb.AppendLine();
-    }
-
-    private void WriteTsTable(StringBuilder sb, TableSchema schema, string ns)
-    {
-        var entity = Ident(schema.Name);
-        var tableName = entity + "Table";
-        var hasKey = schema.KeyColumn != null;
-
-        sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
-        sb.AppendLine($"export class {tableName} {{");
-        sb.AppendLine($"    private _table: _TableData = new _TableData(\"\");");
-
-        if (hasKey)
-        {
-            sb.AppendLine("    private _index: _TableIndex | null = null;");
-            sb.AppendLine($"    private _cache: Map<number, {ns}.{entity}> = new Map();");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("    public load(data: any): void {");
-        sb.AppendLine("        this._table = _TableData.fromPayload(data);");
-
-        if (hasKey)
-        {
-            sb.AppendLine("        this._index = data.ids ? new _TableIndex(data.ids) : null;");
-            sb.AppendLine("        this._cache = new Map();");
-        }
-
-        sb.AppendLine("    }");
-        sb.AppendLine();
-        sb.AppendLine("    public get count(): number {");
-        sb.AppendLine("        return this._table.count;");
-        sb.AppendLine("    }");
-
-        if (hasKey)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"    /** 按主键取一行；只解析被访问的行，并缓存已取过的实体 */");
-            sb.AppendLine($"    public get(id: number): Readonly<{ns}.{entity}> | undefined {{");
-            sb.AppendLine("        const cached = this._cache.get(id);");
-            sb.AppendLine("        if (cached !== undefined) {");
-            sb.AppendLine("            return cached;");
-            sb.AppendLine("        }");
-            sb.AppendLine("        if (this._index === null) {");
-            sb.AppendLine("            return undefined;");
-            sb.AppendLine("        }");
-            sb.AppendLine("        const row = this._index.indexOf(id);");
-            sb.AppendLine("        if (row < 0) {");
-            sb.AppendLine("            return undefined;");
-            sb.AppendLine("        }");
-            sb.AppendLine($"        const entity = new {ns}.{entity}(this._table, row);");
-            sb.AppendLine("        this._cache.set(id, entity);");
-            sb.AppendLine("        return entity;");
+                ? $"        return _lang.t({access});"
+                : $"        return {access};");
             sb.AppendLine("    }");
         }
 
-        sb.AppendLine();
-        sb.AppendLine("    /** 全表遍历：逐行创建实体，不驻留整表对象 */");
-        sb.AppendLine($"    public forEach(callback: (row: {ns}.{entity}, index: number) => void): void {{");
-        sb.AppendLine("        const count = this._table.count;");
-        sb.AppendLine("        for (let i = 0; i < count; i++) {");
-        sb.AppendLine($"            callback(new {ns}.{entity}(this._table, i), i);");
-        sb.AppendLine("        }");
-        sb.AppendLine("    }");
         sb.AppendLine("}");
         sb.AppendLine();
     }
 
-    private void WriteTsArrayList(StringBuilder sb, TableSchema schema, string ns)
+    /// <summary>字段访问：合法标识符用点号，否则用方括号</summary>
+    private static string FieldAccess(string name) =>
+        IsIdentifier(name) ? $".{name}" : $"[\"{name}\"]";
+
+    private static bool IsIdentifier(string name) =>
+        name.Length > 0 &&
+        (char.IsLetter(name[0]) || name[0] == '_') &&
+        name.All(c => char.IsLetterOrDigit(c) || c == '_');
+
+    private void WriteTsMap(StringBuilder sb, TableSchema schema)
     {
-        var entity = Ident(schema.Name);
-        var tableName = entity + "List";
+        var entity = "_" + Ident(schema.Name);
+        var className = entity + "Map";
 
         sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
-        sb.AppendLine($"export class {tableName} {{");
-        sb.AppendLine("    private _table: _TableData = new _TableData(\"\");");
+        sb.AppendLine($"export class {className} {{");
+        sb.AppendLine("    /** 原始行数据，按需解析 */");
+        sb.AppendLine("    private _rows: string[] = [];");
         sb.AppendLine();
-        sb.AppendLine("    public load(data: any): void {");
-        sb.AppendLine("        this._table = _TableData.fromPayload(data);");
+        sb.AppendLine("    /** 主键 -> 行号 */");
+        sb.AppendLine("    private _index: Map<number, number> = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("    /** 已访问过的行（只缓存用到的实体） */");
+        sb.AppendLine($"    private _data: Map<number, {entity}> = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("    public init(_data: any): void {");
+        sb.AppendLine("        this._rows = _data || [];");
+        sb.AppendLine("        this._index = new Map();");
+        sb.AppendLine("        this._data = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("        for (let i = 0; i < this._rows.length; i++) {");
+        sb.AppendLine("            this._index.set(_parseKey(this._rows[i]), i);");
+        sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    public get count(): number {");
-        sb.AppendLine("        return this._table.count;");
+        sb.AppendLine("        return this._rows.length;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine($"    public get(index: number): Readonly<{ns}.{entity}> | undefined {{");
-        sb.AppendLine("        if (index < 0 || index >= this._table.count) {");
+        sb.AppendLine("    /** 按主键取一行：定位到行号后才创建实体并解析 */");
+        sb.AppendLine($"    public findById(id: number): Readonly<{entity}> | undefined {{");
+        sb.AppendLine("        const cached = this._data.get(id);");
+        sb.AppendLine("        if (cached !== undefined) {");
+        sb.AppendLine("            return cached;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        const row = this._index.get(id);");
+        sb.AppendLine("        if (row === undefined) {");
         sb.AppendLine("            return undefined;");
         sb.AppendLine("        }");
-        sb.AppendLine($"        return new {ns}.{entity}(this._table, index);");
+        sb.AppendLine();
+        sb.AppendLine($"        const entity = new {entity}(this._rows[row]);");
+        sb.AppendLine("        this._data.set(id, entity);");
+        sb.AppendLine("        return entity;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine($"    public forEach(callback: (row: {ns}.{entity}, index: number) => void): void {{");
-        sb.AppendLine("        const count = this._table.count;");
-        sb.AppendLine("        for (let i = 0; i < count; i++) {");
-        sb.AppendLine($"            callback(new {ns}.{entity}(this._table, i), i);");
+        sb.AppendLine("    /** 全表遍历：逐行创建实体，不驻留 */");
+        sb.AppendLine($"    public forEach(callback: (row: {entity}, index: number) => void): void {{");
+        sb.AppendLine("        for (let i = 0; i < this._rows.length; i++) {");
+        sb.AppendLine($"            callback(new {entity}(this._rows[i]), i);");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine("}");
         sb.AppendLine();
     }
 
-    private void WriteTsGroup(StringBuilder sb, TableSchema schema, string ns)
+    private void WriteTsList(StringBuilder sb, TableSchema schema)
     {
-        var entity = Ident(schema.Name);
-        var tableName = entity + "Group";
+        var entity = "_" + Ident(schema.Name);
+        var className = entity + "List";
 
         sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
-        sb.AppendLine($"export class {tableName} {{");
-        sb.AppendLine("    private _table: _TableData = new _TableData(\"\");");
-        sb.AppendLine("    private _groups: Map<number, number[]> | null = null;");
+        sb.AppendLine($"export class {className} {{");
+        sb.AppendLine("    /** 原始行数据，按需解析 */");
+        sb.AppendLine("    private _rows: string[] = [];");
         sb.AppendLine();
-        sb.AppendLine("    public load(data: any): void {");
-        sb.AppendLine("        this._table = _TableData.fromPayload(data);");
-        sb.AppendLine("        this._groups = null;");
+        sb.AppendLine("    /** 已访问过的行（只缓存用到的实体） */");
+        sb.AppendLine($"    private _data: Map<number, {entity}> = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("    public init(_data: any[]): void {");
+        sb.AppendLine("        this._rows = _data || [];");
+        sb.AppendLine("        this._data = new Map();");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    public get count(): number {");
-        sb.AppendLine("        return this._table.count;");
+        sb.AppendLine("        return this._rows.length;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine($"    public getGroup(id: number): ReadonlyArray<{ns}.{entity}> | undefined {{");
-        sb.AppendLine("        const rows = this._ensureGroups().get(id);");
+        sb.AppendLine($"    public findByIndex(index: number): Readonly<{entity}> | undefined {{");
+        sb.AppendLine("        if (index < 0 || index >= this._rows.length) {");
+        sb.AppendLine("            return undefined;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        let entity = this._data.get(index);");
+        sb.AppendLine("        if (entity === undefined) {");
+        sb.AppendLine($"            entity = new {entity}(this._rows[index]);");
+        sb.AppendLine("            this._data.set(index, entity);");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        return entity;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine($"    public forEach(callback: (row: {entity}, index: number) => void): void {{");
+        sb.AppendLine("        for (let i = 0; i < this._rows.length; i++) {");
+        sb.AppendLine($"            callback(new {entity}(this._rows[i]), i);");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        sb.AppendLine();
+    }
+
+    private void WriteTsGroup(StringBuilder sb, TableSchema schema)
+    {
+        var entity = "_" + Ident(schema.Name);
+        var className = entity + "Group";
+
+        sb.AppendLine($"/** {schema.Sheet.ChineseName} */");
+        sb.AppendLine($"export class {className} {{");
+        sb.AppendLine("    /** 原始行数据，按需解析 */");
+        sb.AppendLine("    private _rows: string[] = [];");
+        sb.AppendLine();
+        sb.AppendLine("    /** 分组键 -> 行号列表 */");
+        sb.AppendLine("    private _index: Map<number, number[]> = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("    /** 已访问过的行（只缓存用到的实体） */");
+        sb.AppendLine($"    private _data: Map<number, {entity}> = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("    public init(_data: any[]): void {");
+        sb.AppendLine("        this._rows = _data || [];");
+        sb.AppendLine("        this._index = new Map();");
+        sb.AppendLine("        this._data = new Map();");
+        sb.AppendLine();
+        sb.AppendLine("        for (let i = 0; i < this._rows.length; i++) {");
+        sb.AppendLine("            const id = _parseKey(this._rows[i]);");
+        sb.AppendLine("            let temp = this._index.get(id);");
+        sb.AppendLine("            if (temp === undefined) {");
+        sb.AppendLine("                temp = [];");
+        sb.AppendLine("                this._index.set(id, temp);");
+        sb.AppendLine("            }");
+        sb.AppendLine();
+        sb.AppendLine("            temp.push(i);");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public get count(): number {");
+        sb.AppendLine("        return this._rows.length;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine($"    public findGroupById(id: number): ReadonlyArray<{entity}> | undefined {{");
+        sb.AppendLine("        const rows = this._index.get(id);");
         sb.AppendLine("        if (rows === undefined) {");
         sb.AppendLine("            return undefined;");
         sb.AppendLine("        }");
-        sb.AppendLine($"        const result: {ns}.{entity}[] = [];");
+        sb.AppendLine();
+        sb.AppendLine($"        const result: {entity}[] = [];");
         sb.AppendLine("        for (let i = 0; i < rows.length; i++) {");
-        sb.AppendLine($"            result.push(new {ns}.{entity}(this._table, rows[i]));");
+        sb.AppendLine("            result.push(this._entity(rows[i]));");
         sb.AppendLine("        }");
+        sb.AppendLine();
         sb.AppendLine("        return result;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    /** 分组索引懒构建：首次按组查询时才扫描行首列 */");
-        sb.AppendLine("    private _ensureGroups(): Map<number, number[]> {");
-        sb.AppendLine("        if (this._groups !== null) {");
-        sb.AppendLine("            return this._groups;");
+        sb.AppendLine("    /** 同一行只创建一次实体 */");
+        sb.AppendLine($"    private _entity(row: number): {entity} {{");
+        sb.AppendLine($"        let entity = this._data.get(row);");
+        sb.AppendLine("        if (entity === undefined) {");
+        sb.AppendLine($"            entity = new {entity}(this._rows[row]);");
+        sb.AppendLine("            this._data.set(row, entity);");
         sb.AppendLine("        }");
-        sb.AppendLine("        const groups = new Map<number, number[]>();");
-        sb.AppendLine("        const count = this._table.count;");
-        sb.AppendLine("        for (let i = 0; i < count; i++) {");
-        sb.AppendLine("            const key = this._table.readKey(i);");
-        sb.AppendLine("            let rows = groups.get(key);");
-        sb.AppendLine("            if (rows === undefined) {");
-        sb.AppendLine("                rows = [];");
-        sb.AppendLine("                groups.set(key, rows);");
-        sb.AppendLine("            }");
-        sb.AppendLine("            rows.push(i);");
-        sb.AppendLine("        }");
-        sb.AppendLine("        this._groups = groups;");
-        sb.AppendLine("        return groups;");
+        sb.AppendLine();
+        sb.AppendLine("        return entity;");
         sb.AppendLine("    }");
         sb.AppendLine("}");
         sb.AppendLine();
     }
 
-    private void WriteTsRoot(StringBuilder sb, ExcelFileData file, List<TableSchema> schemas, string ns)
+    private void WriteTsRoot(StringBuilder sb, ExcelFileData file, List<TableSchema> schemas)
     {
         var className = "_" + Ident(file.OutputName);
         var containers = schemas.Where(s => s.Kind != TableKind.Enum).ToList();
@@ -628,30 +801,37 @@ public class CodeGenerator
 
         foreach (var schema in containers)
         {
-            sb.AppendLine($"    public {Ident(schema.Name)}: {TsContainerType(schema, ns)} = new {TsContainerType(schema, ns)}();");
+            var type = TsContainerType(schema);
+            sb.AppendLine($"    /** {schema.Sheet.ChineseName} */");
+            sb.AppendLine($"    public {TsMemberName(schema)}: {type} = new {type}();");
         }
 
         sb.AppendLine();
         sb.AppendLine("    public load(data: any): void {");
         foreach (var schema in containers)
         {
-            var member = Ident(schema.Name);
-            sb.AppendLine($"        if (data.{member}) {{");
-            sb.AppendLine($"            this.{member}.load(data.{member});");
-            sb.AppendLine("        }");
+            var member = TsMemberName(schema);
+            var key = Ident(schema.Name);
+
+            sb.AppendLine(schema.Kind == TableKind.Param
+                ? $"        this.{member}._data = data.{key};"
+                : $"        this.{member}.init(data.{key});");
         }
 
         sb.AppendLine("    }");
         sb.AppendLine("}");
     }
 
-    private static string TsContainerType(TableSchema schema, string ns) => schema.Kind switch
+    /// <summary>根类里的字段名：表名 + 容器后缀（参数表无后缀）</summary>
+    private static string TsMemberName(TableSchema schema) => schema.Kind switch
     {
-        TableKind.Keyed => Ident(schema.Name) + "Table",
+        TableKind.Keyed => Ident(schema.Name) + "Map",
         TableKind.Array => Ident(schema.Name) + "List",
         TableKind.Group => Ident(schema.Name) + "Group",
-        _ => ns + "." + Ident(schema.Name)
+        _ => Ident(schema.Name)
     };
+
+    private static string TsContainerType(TableSchema schema) => "_" + TsMemberName(schema);
 
     // ---------------------------------------------------------------- C#
 
@@ -671,11 +851,7 @@ public class CodeGenerator
         sb.AppendLine("namespace Game.Config");
         sb.AppendLine("{");
 
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Enum))
-        {
-            WriteCsEnum(sb, schema);
-        }
-
+        // 枚举统一在 Enums.cs 中定义（同命名空间，直接可用）
         foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
         {
             WriteCsEntity(sb, schema);
@@ -702,33 +878,12 @@ public class CodeGenerator
         }
 
         WriteCsRoot(sb, file, schemas, rootClass);
-        WriteCsRuntime(sb);
 
         sb.AppendLine("}");
 
         var outputPath = Path.Combine(outputDir, $"{file.OutputName}.cs");
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"生成C#: {outputPath}");
-    }
-
-    private void WriteCsEnum(StringBuilder sb, TableSchema schema)
-    {
-        var name = Pascal(schema.Name);
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        sb.AppendLine($"    /// <summary>{schema.Sheet.ChineseName}</summary>");
-        sb.AppendLine($"    public enum {name}");
-        sb.AppendLine("    {");
-
-        foreach (var entry in schema.Sheet.EnumEntries)
-        {
-            var member = UniqueName(SafeCsIdentifier(Pascal(entry.Name)), used);
-            sb.AppendLine($"        /// <summary>{entry.Comment}</summary>");
-            sb.AppendLine($"        {member} = {entry.Value},");
-        }
-
-        sb.AppendLine("    }");
-        sb.AppendLine();
+        Logger.Success($"生成C#: {Path.GetFileName(outputPath)}");
     }
 
     private void WriteCsEntity(StringBuilder sb, TableSchema schema)
@@ -784,7 +939,7 @@ public class CodeGenerator
         sb.AppendLine("        {");
         sb.AppendLine("            using (var doc = JsonDocument.Parse(json))");
         sb.AppendLine("            {");
-        sb.AppendLine("                if (!doc.RootElement.TryGetProperty(\"fields\", out var fields)) return;");
+        sb.AppendLine("                var fields = doc.RootElement;");
         sb.AppendLine("                JsonElement cell;");
 
         foreach (var column in schema.Columns)
@@ -802,50 +957,51 @@ public class CodeGenerator
     private void WriteCsTable(StringBuilder sb, TableSchema schema)
     {
         var rootClass = Pascal(schema.Name);
-        var tableName = rootClass + "Table";
+        var tableName = rootClass + "Map";
 
         sb.AppendLine($"    /// <summary>{schema.Sheet.ChineseName}</summary>");
         sb.AppendLine($"    public class {tableName}");
         sb.AppendLine("    {");
-        sb.AppendLine("        private ConfigTable _table = new ConfigTable(string.Empty);");
-        sb.AppendLine("        private int[] _ids = Array.Empty<int>();");
-        sb.AppendLine("        private int[] _order;");
-        sb.AppendLine($"        private readonly Dictionary<int, {rootClass}> _cache = new Dictionary<int, {rootClass}>();");
+        sb.AppendLine("        private readonly ConfigTable _table = new ConfigTable();");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>主键 -> 行号</summary>");
+        sb.AppendLine("        private readonly Dictionary<int, int> _index = new Dictionary<int, int>();");
+        sb.AppendLine();
+        sb.AppendLine($"        /// <summary>已访问过的行（只缓存用到的实体）</summary>");
+        sb.AppendLine($"        private readonly Dictionary<int, {rootClass}> _data = new Dictionary<int, {rootClass}>();");
         sb.AppendLine();
         sb.AppendLine("        public int Count => _table.Count;");
         sb.AppendLine();
         sb.AppendLine("        public void Load(string json)");
         sb.AppendLine("        {");
-        sb.AppendLine("            using (var doc = JsonDocument.Parse(json))");
-        sb.AppendLine("            {");
-        sb.AppendLine("                var root = doc.RootElement;");
-        sb.AppendLine("                _table = new ConfigTable(ConfigTable.ExtractText(root));");
-        sb.AppendLine("                _ids = root.TryGetProperty(\"ids\", out var ids) ? ConfigValue.ToIntArray(ids) : Array.Empty<int>();");
-        sb.AppendLine("            }");
+        sb.AppendLine("            _table.Load(json);");
+        sb.AppendLine("            _index.Clear();");
+        sb.AppendLine("            _data.Clear();");
         sb.AppendLine();
-        sb.AppendLine("            _cache.Clear();");
-        sb.AppendLine("            _order = ConfigValue.BuildOrder(_ids);");
+        sb.AppendLine("            for (int i = 0; i < _table.Count; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                _index[_table.ReadKey(i)] = i;");
+        sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine($"        /// <summary>按主键取一行；只解析被访问的行，并缓存已取过的实体</summary>");
-        sb.AppendLine($"        public {rootClass} Get(int id)");
+        sb.AppendLine($"        /// <summary>按主键取一行：定位到行号后才创建实体并解析</summary>");
+        sb.AppendLine($"        public {rootClass} FindById(int id)");
         sb.AppendLine("        {");
         sb.AppendLine($"            {rootClass} cached;");
-        sb.AppendLine("            if (_cache.TryGetValue(id, out cached)) return cached;");
+        sb.AppendLine("            if (_data.TryGetValue(id, out cached)) return cached;");
         sb.AppendLine();
-        sb.AppendLine("            int row = ConfigValue.IndexOfKey(_ids, _order, id);");
-        sb.AppendLine("            if (row < 0) return null;");
+        sb.AppendLine("            int row;");
+        sb.AppendLine("            if (!_index.TryGetValue(id, out row)) return null;");
         sb.AppendLine();
         sb.AppendLine($"            var entity = new {rootClass}(_table.Row(row));");
-        sb.AppendLine("            _cache[id] = entity;");
+        sb.AppendLine("            _data[id] = entity;");
         sb.AppendLine("            return entity;");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        /// <summary>全表遍历：逐行创建实体，不驻留整表对象</summary>");
         sb.AppendLine($"        public void ForEach(Action<{rootClass}, int> callback)");
         sb.AppendLine("        {");
-        sb.AppendLine("            int count = _table.Count;");
-        sb.AppendLine("            for (int i = 0; i < count; i++)");
+        sb.AppendLine("            for (int i = 0; i < _table.Count; i++)");
         sb.AppendLine("            {");
         sb.AppendLine($"                callback(new {rootClass}(_table.Row(i)), i);");
         sb.AppendLine("            }");
@@ -857,27 +1013,34 @@ public class CodeGenerator
     private void WriteCsList(StringBuilder sb, TableSchema schema)
     {
         var entity = Pascal(schema.Name);
-        var tableName = entity + "Table";
+        var tableName = entity + "List";
 
         sb.AppendLine($"    /// <summary>{schema.Sheet.ChineseName}</summary>");
         sb.AppendLine($"    public class {tableName}");
         sb.AppendLine("    {");
-        sb.AppendLine("        private ConfigTable _table = new ConfigTable(string.Empty);");
+        sb.AppendLine("        private readonly ConfigTable _table = new ConfigTable();");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>已访问过的行（只缓存用到的实体）</summary>");
+        sb.AppendLine($"        private readonly Dictionary<int, {entity}> _data = new Dictionary<int, {entity}>();");
         sb.AppendLine();
         sb.AppendLine("        public int Count => _table.Count;");
         sb.AppendLine();
         sb.AppendLine("        public void Load(string json)");
         sb.AppendLine("        {");
-        sb.AppendLine("            using (var doc = JsonDocument.Parse(json))");
-        sb.AppendLine("            {");
-        sb.AppendLine("                _table = new ConfigTable(ConfigTable.ExtractText(doc.RootElement));");
-        sb.AppendLine("            }");
+        sb.AppendLine("            _table.Load(json);");
+        sb.AppendLine("            _data.Clear();");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine($"        public {entity} Get(int index)");
+        sb.AppendLine($"        public {entity} FindByIndex(int index)");
         sb.AppendLine("        {");
         sb.AppendLine("            if (index < 0 || index >= _table.Count) return null;");
-        sb.AppendLine($"            return new {entity}(_table.Row(index));");
+        sb.AppendLine();
+        sb.AppendLine($"            {entity} cached;");
+        sb.AppendLine("            if (_data.TryGetValue(index, out cached)) return cached;");
+        sb.AppendLine();
+        sb.AppendLine($"            var entity = new {entity}(_table.Row(index));");
+        sb.AppendLine("            _data[index] = entity;");
+        sb.AppendLine("            return entity;");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine($"        public void ForEach(Action<{entity}, int> callback)");
@@ -900,56 +1063,59 @@ public class CodeGenerator
         sb.AppendLine($"    /// <summary>{schema.Sheet.ChineseName}</summary>");
         sb.AppendLine($"    public class {tableName}");
         sb.AppendLine("    {");
-        sb.AppendLine("        private ConfigTable _table = new ConfigTable(string.Empty);");
-        sb.AppendLine($"        private Dictionary<int, List<int>> _groups;");
+        sb.AppendLine("        private readonly ConfigTable _table = new ConfigTable();");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>分组键 -> 行号列表</summary>");
+        sb.AppendLine("        private readonly Dictionary<int, List<int>> _index = new Dictionary<int, List<int>>();");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>已访问过的行（只缓存用到的实体）</summary>");
+        sb.AppendLine($"        private readonly Dictionary<int, {entity}> _data = new Dictionary<int, {entity}>();");
         sb.AppendLine();
         sb.AppendLine("        public int Count => _table.Count;");
         sb.AppendLine();
         sb.AppendLine("        public void Load(string json)");
         sb.AppendLine("        {");
-        sb.AppendLine("            using (var doc = JsonDocument.Parse(json))");
-        sb.AppendLine("            {");
-        sb.AppendLine("                _table = new ConfigTable(ConfigTable.ExtractText(doc.RootElement));");
-        sb.AppendLine("            }");
+        sb.AppendLine("            _table.Load(json);");
+        sb.AppendLine("            _index.Clear();");
+        sb.AppendLine("            _data.Clear();");
         sb.AppendLine();
-        sb.AppendLine("            _groups = null;");
+        sb.AppendLine("            for (int i = 0; i < _table.Count; i++)");
+        sb.AppendLine("            {");
+        sb.AppendLine("                int key = _table.ReadKey(i);");
+        sb.AppendLine("                List<int> rows;");
+        sb.AppendLine("                if (!_index.TryGetValue(key, out rows))");
+        sb.AppendLine("                {");
+        sb.AppendLine("                    rows = new List<int>();");
+        sb.AppendLine("                    _index.Add(key, rows);");
+        sb.AppendLine("                }");
+        sb.AppendLine();
+        sb.AppendLine("                rows.Add(i);");
+        sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine($"        public IReadOnlyList<{entity}> GetGroup(int id)");
+        sb.AppendLine($"        public IReadOnlyList<{entity}> FindGroupById(int id)");
         sb.AppendLine("        {");
-        sb.AppendLine("            EnsureGroups();");
-        sb.AppendLine();
-        sb.AppendLine($"            List<int> rows;");
-        sb.AppendLine("            if (!_groups.TryGetValue(id, out rows)) return null;");
+        sb.AppendLine("            List<int> rows;");
+        sb.AppendLine("            if (!_index.TryGetValue(id, out rows)) return null;");
         sb.AppendLine();
         sb.AppendLine($"            var result = new List<{entity}>(rows.Count);");
         sb.AppendLine("            for (int i = 0; i < rows.Count; i++)");
         sb.AppendLine("            {");
-        sb.AppendLine($"                result.Add(new {entity}(_table.Row(rows[i])));");
+        sb.AppendLine("                result.Add(GetEntity(rows[i]));");
         sb.AppendLine("            }");
         sb.AppendLine();
         sb.AppendLine("            return result;");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine("        /// <summary>分组索引懒构建：首次按组查询时才扫描行首列</summary>");
-        sb.AppendLine("        private void EnsureGroups()");
+        sb.AppendLine("        /// <summary>同一行只创建一次实体</summary>");
+        sb.AppendLine($"        private {entity} GetEntity(int row)");
         sb.AppendLine("        {");
-        sb.AppendLine("            if (_groups != null) return;");
+        sb.AppendLine($"            {entity} cached;");
+        sb.AppendLine("            if (_data.TryGetValue(row, out cached)) return cached;");
         sb.AppendLine();
-        sb.AppendLine("            _groups = new Dictionary<int, List<int>>();");
-        sb.AppendLine("            int count = _table.Count;");
-        sb.AppendLine("            for (int i = 0; i < count; i++)");
-        sb.AppendLine("            {");
-        sb.AppendLine("                int key = _table.ReadKey(i);");
-        sb.AppendLine("                List<int> rows;");
-        sb.AppendLine("                if (!_groups.TryGetValue(key, out rows))");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    rows = new List<int>();");
-        sb.AppendLine("                    _groups.Add(key, rows);");
-        sb.AppendLine("                }");
-        sb.AppendLine();
-        sb.AppendLine("                rows.Add(i);");
-        sb.AppendLine("            }");
+        sb.AppendLine($"            var entity = new {entity}(_table.Row(row));");
+        sb.AppendLine("            _data[row] = entity;");
+        sb.AppendLine("            return entity;");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
@@ -966,7 +1132,7 @@ public class CodeGenerator
         foreach (var schema in containers)
         {
             var type = CsContainerType(schema);
-            sb.AppendLine($"        public {type} {Pascal(schema.Name)} {{ get; }} = new {type}();");
+            sb.AppendLine($"        public {type} {CsMemberName(schema)} {{ get; }} = new {type}();");
         }
 
         sb.AppendLine();
@@ -979,7 +1145,7 @@ public class CodeGenerator
 
         foreach (var schema in containers)
         {
-            sb.AppendLine($"                if (root.TryGetProperty(\"{schema.Name}\", out section)) {Pascal(schema.Name)}.Load(section.GetRawText());");
+            sb.AppendLine($"                if (root.TryGetProperty(\"{schema.Name}\", out section)) {CsMemberName(schema)}.Load(section.GetRawText());");
         }
 
         sb.AppendLine("            }");
@@ -988,10 +1154,19 @@ public class CodeGenerator
         sb.AppendLine();
     }
 
+    /// <summary>根类里的字段名：表名 + 容器后缀（参数表无后缀）</summary>
+    private static string CsMemberName(TableSchema schema) => schema.Kind switch
+    {
+        TableKind.Keyed => Pascal(schema.Name) + "Map",
+        TableKind.Array => Pascal(schema.Name) + "List",
+        TableKind.Group => Pascal(schema.Name) + "Group",
+        _ => Pascal(schema.Name)
+    };
+
     private static string CsContainerType(TableSchema schema) => schema.Kind switch
     {
-        TableKind.Keyed => Pascal(schema.Name) + "Table",
-        TableKind.Array => Pascal(schema.Name) + "Table",
+        TableKind.Keyed => Pascal(schema.Name) + "Map",
+        TableKind.Array => Pascal(schema.Name) + "List",
         TableKind.Group => Pascal(schema.Name) + "Group",
         _ => Pascal(schema.Name) + "Config"
     };
@@ -1018,132 +1193,56 @@ public class CodeGenerator
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    /// <summary>");
-        sb.AppendLine("    /// 行数据容器：整表只保留一份文本和行偏移表，");
+        sb.AppendLine("    /// 行数据容器：只保存原始行文本数组，");
         sb.AppendLine("    /// 访问某行时才解析该行，避免一次性创建几十万个数组。");
         sb.AppendLine("    /// </summary>");
         sb.AppendLine("    public sealed class ConfigTable");
         sb.AppendLine("    {");
-        sb.AppendLine("        private readonly string _text;");
-        sb.AppendLine("        private readonly int[] _offsets;");
+        sb.AppendLine("        private string[] _rows = Array.Empty<string>();");
         sb.AppendLine();
-        sb.AppendLine("        public ConfigTable(string text)");
+        sb.AppendLine("        public int Count { get { return _rows.Length; } }");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>由 JSON 的字符串数组加载</summary>");
+        sb.AppendLine("        public void Load(string json)");
         sb.AppendLine("        {");
-        sb.AppendLine("            _text = text ?? string.Empty;");
-        sb.AppendLine("            _offsets = SplitLines(_text);");
-        sb.AppendLine("        }");
-        sb.AppendLine();
-        sb.AppendLine("        public int Count { get { return _offsets.Length - 1; } }");
-        sb.AppendLine();
-        sb.AppendLine("        /// <summary>兼容两种 JSON 形态：data（单块文本）或 rows（逐行字符串数组）</summary>");
-        sb.AppendLine("        public static string ExtractText(JsonElement root)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (root.TryGetProperty(\"data\", out var data) && data.ValueKind == JsonValueKind.String)");
-        sb.AppendLine("            {");
-        sb.AppendLine("                return data.GetString();");
-        sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            if (root.TryGetProperty(\"rows\", out var rows) && rows.ValueKind == JsonValueKind.Array)");
-        sb.AppendLine("            {");
-        sb.AppendLine("                var parts = new List<string>();");
-        sb.AppendLine("                foreach (var item in rows.EnumerateArray())");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    parts.Add(item.GetString());");
-        sb.AppendLine("                }");
-        sb.AppendLine();
-        sb.AppendLine("                return string.Join(\"\\n\", parts);");
-        sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            return string.Empty;");
+        sb.AppendLine("            _rows = ConfigValue.ToRows(json);");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        public ConfigRow Row(int index)");
         sb.AppendLine("        {");
-        sb.AppendLine("            return new ConfigRow(this, index);");
-        sb.AppendLine("        }");
-        sb.AppendLine();
-        sb.AppendLine("        /// <summary>解析第 index 行，只创建这一行的数组</summary>");
-        sb.AppendLine("        public object[] ParseRow(int index)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (index < 0 || index >= Count) return Array.Empty<object>();");
-        sb.AppendLine();
-        sb.AppendLine("            int start = _offsets[index];");
-        sb.AppendLine("            int length = _offsets[index + 1] - start;");
-        sb.AppendLine("            var values = new List<object>();");
-        sb.AppendLine();
-        sb.AppendLine("            using (var doc = JsonDocument.Parse(_text.Substring(start, length)))");
-        sb.AppendLine("            {");
-        sb.AppendLine("                foreach (var cell in doc.RootElement.EnumerateArray())");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    values.Add(ConfigValue.ToObject(cell));");
-        sb.AppendLine("                }");
-        sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            return values.ToArray();");
+        sb.AppendLine("            return new ConfigRow(index < _rows.Length ? _rows[index] : null);");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        /// <summary>只读取行首的数值（分组键），不解析整行</summary>");
         sb.AppendLine("        public int ReadKey(int index)");
         sb.AppendLine("        {");
-        sb.AppendLine("            int i = _offsets[index];");
-        sb.AppendLine("            int end = _offsets[index + 1];");
-        sb.AppendLine("            if (i < end && _text[i] == '[') i++;");
-        sb.AppendLine();
-        sb.AppendLine("            int sign = 1;");
-        sb.AppendLine("            int value = 0;");
-        sb.AppendLine("            bool hit = false;");
-        sb.AppendLine();
-        sb.AppendLine("            for (; i < end; i++)");
-        sb.AppendLine("            {");
-        sb.AppendLine("                char c = _text[i];");
-        sb.AppendLine("                if (c >= '0' && c <= '9')");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    value = value * 10 + (c - '0');");
-        sb.AppendLine("                    hit = true;");
-        sb.AppendLine("                }");
-        sb.AppendLine("                else if (c == '-')");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    sign = -1;");
-        sb.AppendLine("                }");
-        sb.AppendLine("                else if (hit)");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    break;");
-        sb.AppendLine("                }");
-        sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            return sign * value;");
-        sb.AppendLine("        }");
-        sb.AppendLine();
-        sb.AppendLine("        private static int[] SplitLines(string text)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            if (text.Length == 0) return new int[] { 0 };");
-        sb.AppendLine();
-        sb.AppendLine("            var offsets = new List<int> { 0 };");
-        sb.AppendLine("            for (int i = 0; i < text.Length; i++)");
-        sb.AppendLine("            {");
-        sb.AppendLine("                if (text[i] == '\\n') offsets.Add(i + 1);");
-        sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            offsets.Add(text.Length);");
-        sb.AppendLine("            return offsets.ToArray();");
+        sb.AppendLine("            return ConfigValue.ReadKey(_rows[index]);");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    /// <summary>一行数据：首次访问字段时才解析</summary>");
         sb.AppendLine("    public sealed class ConfigRow");
         sb.AppendLine("    {");
-        sb.AppendLine("        private readonly ConfigTable _table;");
-        sb.AppendLine("        private readonly int _index;");
+        sb.AppendLine("        private string _data;");
         sb.AppendLine("        private object[] _values;");
         sb.AppendLine();
-        sb.AppendLine("        public ConfigRow(ConfigTable table, int index)");
+        sb.AppendLine("        public ConfigRow(string data)");
         sb.AppendLine("        {");
-        sb.AppendLine("            _table = table;");
-        sb.AppendLine("            _index = index;");
+        sb.AppendLine("            _data = data;");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        public object[] Values");
         sb.AppendLine("        {");
-        sb.AppendLine("            get { return _values ?? (_values = _table.ParseRow(_index)); }");
+        sb.AppendLine("            get");
+        sb.AppendLine("            {");
+        sb.AppendLine("                if (_values == null)");
+        sb.AppendLine("                {");
+        sb.AppendLine("                    _values = ConfigValue.ParseRow(_data);");
+        sb.AppendLine("                    _data = null;");
+        sb.AppendLine("                }");
+        sb.AppendLine();
+        sb.AppendLine("                return _values;");
+        sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine();
@@ -1259,48 +1358,53 @@ public class CodeGenerator
         sb.AppendLine("            return list;");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine("        public static int[] ToIntArray(JsonElement cell)");
+        sb.AppendLine("        /// <summary>把 JSON 根节点（字符串数组）读成行文本数组</summary>");
+        sb.AppendLine("        public static string[] ToRows(string json)");
         sb.AppendLine("        {");
-        sb.AppendLine("            var values = new List<int>();");
-        sb.AppendLine("            if (cell.ValueKind != JsonValueKind.Array) return values.ToArray();");
-        sb.AppendLine("            foreach (var item in cell.EnumerateArray()) values.Add(ToInt(item));");
-        sb.AppendLine("            return values.ToArray();");
-        sb.AppendLine("        }");
+        sb.AppendLine("            if (string.IsNullOrEmpty(json)) return Array.Empty<string>();");
         sb.AppendLine();
-        sb.AppendLine("        /// <summary>ids 已升序时返回 null，否则返回按 id 排序的行号表</summary>");
-        sb.AppendLine("        public static int[] BuildOrder(int[] ids)");
-        sb.AppendLine("        {");
-        sb.AppendLine("            for (int i = 1; i < ids.Length; i++)");
+        sb.AppendLine("            using (var doc = JsonDocument.Parse(json))");
         sb.AppendLine("            {");
-        sb.AppendLine("                if (ids[i] <= ids[i - 1])");
+        sb.AppendLine("                if (doc.RootElement.ValueKind != JsonValueKind.Array) return Array.Empty<string>();");
+        sb.AppendLine();
+        sb.AppendLine("                var rows = new List<string>();");
+        sb.AppendLine("                foreach (var item in doc.RootElement.EnumerateArray())");
         sb.AppendLine("                {");
-        sb.AppendLine("                    var order = new int[ids.Length];");
-        sb.AppendLine("                    for (int j = 0; j < order.Length; j++) order[j] = j;");
-        sb.AppendLine("                    Array.Sort(order, (a, b) => ids[a].CompareTo(ids[b]));");
-        sb.AppendLine("                    return order;");
+        sb.AppendLine("                    rows.Add(item.ValueKind == JsonValueKind.String ? item.GetString() : item.GetRawText());");
         sb.AppendLine("                }");
-        sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            return null;");
+        sb.AppendLine("                return rows.ToArray();");
+        sb.AppendLine("            }");
         sb.AppendLine("        }");
         sb.AppendLine();
-        sb.AppendLine("        /// <summary>二分查找主键所在行，找不到返回 -1</summary>");
-        sb.AppendLine("        public static int IndexOfKey(int[] ids, int[] order, int id)");
+        sb.AppendLine("        /// <summary>从 \"[1,...]\" 里取首列数字（主键 / 分组键）</summary>");
+        sb.AppendLine("        public static int ReadKey(string row)");
         sb.AppendLine("        {");
-        sb.AppendLine("            int low = 0;");
-        sb.AppendLine("            int high = ids.Length - 1;");
+        sb.AppendLine("            if (string.IsNullOrEmpty(row)) return 0;");
         sb.AppendLine();
-        sb.AppendLine("            while (low <= high)");
+        sb.AppendLine("            int start = row[0] == '[' ? 1 : 0;");
+        sb.AppendLine("            int end = row.IndexOf(',', start);");
+        sb.AppendLine("            if (end < 0) end = row.Length;");
+        sb.AppendLine();
+        sb.AppendLine("            int value;");
+        sb.AppendLine("            return int.TryParse(row.Substring(start, end - start), out value) ? value : 0;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>解析一行文本</summary>");
+        sb.AppendLine("        public static object[] ParseRow(string row)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (string.IsNullOrEmpty(row)) return Array.Empty<object>();");
+        sb.AppendLine();
+        sb.AppendLine("            using (var doc = JsonDocument.Parse(row))");
         sb.AppendLine("            {");
-        sb.AppendLine("                int mid = (low + high) >> 1;");
-        sb.AppendLine("                int row = order == null ? mid : order[mid];");
-        sb.AppendLine("                int value = ids[row];");
+        sb.AppendLine("                var values = new List<object>();");
+        sb.AppendLine("                foreach (var cell in doc.RootElement.EnumerateArray())");
+        sb.AppendLine("                {");
+        sb.AppendLine("                    values.Add(ToObject(cell));");
+        sb.AppendLine("                }");
         sb.AppendLine();
-        sb.AppendLine("                if (value == id) return row;");
-        sb.AppendLine("                if (value < id) low = mid + 1; else high = mid - 1;");
+        sb.AppendLine("                return values.ToArray();");
         sb.AppendLine("            }");
-        sb.AppendLine();
-        sb.AppendLine("            return -1;");
         sb.AppendLine("        }");
         sb.AppendLine("    }");
     }
@@ -1315,7 +1419,7 @@ public class CodeGenerator
             ValueKind.Bool => "boolean",
             ValueKind.String => "string",
             ValueKind.Language => "string",
-            ValueKind.Enum => Ident(type.Name),
+            ValueKind.Enum => "TableEnums." + Ident(type.Name),
             ValueKind.RowRef => "number",
             _ => "any"
         };
@@ -1325,7 +1429,7 @@ public class CodeGenerator
 
     private static string TsValueOf(SchemaColumn column)
     {
-        var raw = $"this._parse()[{column.Index}]";
+        var raw = $"this.objects[{column.Index}]";
 
         if (column.Type.Kind == ValueKind.Language && !column.Type.IsArray)
         {

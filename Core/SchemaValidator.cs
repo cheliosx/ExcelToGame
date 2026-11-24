@@ -13,9 +13,10 @@ public sealed class SchemaValidator
 
     public TypeRegistry Types { get; } = new();
 
-    public bool Validate(List<ExcelFileData> files)
+    public bool Validate(List<ExcelFileData> files, ExportTarget target)
     {
         _errors.Clear();
+        // 类型注册用全量页签：客户端表也可能引用只在服务端定义的类型
         Types.Register(files.SelectMany(f => f.DataSheets));
 
         ValidateUniqueNames(files);
@@ -26,7 +27,12 @@ public sealed class SchemaValidator
             {
                 ValidateTypes(sheet);
                 ValidateEnum(sheet);
-                ValidateKey(sheet);
+
+                // 只校验本次真正要导出的表
+                if (sheet.IsExportedTo(target))
+                {
+                    ValidateKey(sheet, target);
+                }
             }
         }
 
@@ -95,8 +101,8 @@ public sealed class SchemaValidator
         }
     }
 
-    /// <summary>按主键/分组键访问的表，键列必须导出到客户端</summary>
-    private void ValidateKey(SheetData sheet)
+    /// <summary>按主键/分组键访问的表，键列必须导出到目标端</summary>
+    private void ValidateKey(SheetData sheet, ExportTarget target)
     {
         if (sheet.Kind is not (TableKind.Keyed or TableKind.Group))
         {
@@ -110,9 +116,9 @@ public sealed class SchemaValidator
             return;
         }
 
-        if (!key.ExportToClient)
+        if (!key.IsExportedTo(target))
         {
-            Error($"表 {sheet.SheetName} 的主键 {key.Name} 未导出到客户端，无法生成按 id 访问的容器");
+            Error($"表 {sheet.SheetName} 的主键 {key.Name} 未导出到{target.ToDisplayName()}，无法生成按 id 访问的容器");
         }
 
         // 主键/分组键用于二分查找与懒加载索引，必须是数值列
