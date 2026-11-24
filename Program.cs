@@ -12,10 +12,10 @@ class Program
 
         Logger.Info("========================================");
         Logger.Info("   Excel to Game Config Tool");
-        Logger.Info("   Supports: JSON / TypeScript / C#");
+        Logger.Info("   Supports: JSON / TypeScript / C# / Java");
         Logger.Info("========================================");
 
-        // 用法: ExcelToGame <输入目录> <输出目录> [--target client|server] [--ts] [--cs] [--lang ts,cs]
+        // 用法: ExcelToGame <输入目录> <输出目录> [--target client|server] [--ts] [--cs] [--java] [--lang ts,cs,java]
         // 输入目录下的所有 .xlsx 会被一次性读取，枚举与多语言全局汇总
         var positionals = new List<string>();
         var target = ExportTarget.Client;
@@ -63,6 +63,12 @@ class Program
                     languageSpecified = true;
                     break;
 
+                case "java":
+                case "jdk":
+                    languages.Add("java");
+                    languageSpecified = true;
+                    break;
+
                 case "lang":
                     var spec = inlineValue ?? (i + 1 < args.Length ? args[++i] : string.Empty);
                     languageSpecified = true;
@@ -77,16 +83,20 @@ class Program
                         {
                             languages.Add("cs");
                         }
+                        else if (IsJava(part))
+                        {
+                            languages.Add("java");
+                        }
                         else
                         {
-                            Logger.Error($"未知的导出语言: '{part}'，可选 ts / cs");
+                            Logger.Error($"未知的导出语言: '{part}'，可选 ts / cs / java");
                             return 1;
                         }
                     }
 
                     if (languages.Count == 0)
                     {
-                        Logger.Error("--lang 不能为空，可选 ts / cs");
+                        Logger.Error("--lang 不能为空，可选 ts / cs / java");
                         return 1;
                     }
                     break;
@@ -97,21 +107,27 @@ class Program
             }
         }
 
-        // 不指定就两种语言都导
+        // 不指定就两种语言都导；服务端额外带上 Java（服务端一般是 Java）
         if (!languageSpecified)
         {
             languages.Add("ts");
             languages.Add("cs");
+
+            if (target == ExportTarget.Server)
+            {
+                languages.Add("java");
+            }
         }
 
         var emitTs = languages.Contains("ts");
         var emitCs = languages.Contains("cs");
+        var emitJava = languages.Contains("java");
 
         var inputDir = positionals.Count > 0 ? positionals[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
         var outputDir = positionals.Count > 1 ? positionals[1] : Path.Combine(AppContext.BaseDirectory, "Output");
 
         Logger.Info($"导出目标: {target.ToDisplayName()} ({target.ToKey()})");
-        Logger.Info($"导出内容: JSON + i10n{(emitTs ? " + TypeScript" : string.Empty)}{(emitCs ? " + C#" : string.Empty)}");
+        Logger.Info($"导出内容: JSON + i10n{(emitTs ? " + TypeScript" : string.Empty)}{(emitCs ? " + C#" : string.Empty)}{(emitJava ? " + Java" : string.Empty)}");
 
         // 读取与校验都在写盘之前完成：这一步失败不会动到已有产物
         var excelFiles = FileUtil.GetExcelFiles(inputDir);
@@ -198,6 +214,7 @@ class Program
         var jsonDir = Path.Combine(stagingDir, "Json");
         var tsDir = Path.Combine(stagingDir, "TS");
         var csDir = Path.Combine(stagingDir, "CSharp");
+        var javaDir = Path.Combine(stagingDir, "Java", CodeGenerator.JavaPackagePath);
         var langDir = Path.Combine(stagingDir, LanguageGenerator.Directory);
 
         try
@@ -213,6 +230,11 @@ class Program
             if (emitCs)
             {
                 FileUtil.EnsureDirectory(csDir);
+            }
+
+            if (emitJava)
+            {
+                FileUtil.EnsureDirectory(javaDir);
             }
 
             await langGenerator.ExportLanguageJson(Path.Combine(langDir, LanguageGenerator.DefaultFileName));
@@ -235,6 +257,13 @@ class Program
                 await codeGenerator.GenerateCsEntry(targetFiles, csDir);
             }
 
+            if (emitJava)
+            {
+                await codeGenerator.GenerateJavaRuntime(javaDir);
+                await codeGenerator.GenerateJavaEnums(targetSheets, javaDir);
+                await codeGenerator.GenerateJavaEntry(targetFiles, javaDir);
+            }
+
             // 每个 Excel 文件一套数据与实体
             var builder = new SchemaBuilder(validator.Types, target);
 
@@ -255,6 +284,11 @@ class Program
                 if (emitCs)
                 {
                     await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
+                }
+
+                if (emitJava)
+                {
+                    await codeGenerator.GenerateJava(excelData, schemas, javaDir);
                 }
             }
         }
@@ -322,6 +356,10 @@ class Program
         value.Equals("cs", StringComparison.OrdinalIgnoreCase) ||
         value.Equals("csharp", StringComparison.OrdinalIgnoreCase) ||
         value.Equals("c#", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsJava(string value) =>
+        value.Equals("java", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("jdk", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryParseTarget(string value, out ExportTarget target)
     {

@@ -7,10 +7,10 @@ using ExcelToGame.Utils;
 namespace ExcelToGame.Core;
 
 /// <summary>
-/// 按 TableSchema 生成 JSON / TypeScript / C# 产物。
+/// 按 TableSchema 生成 JSON / TypeScript / C# / Java 产物。
 /// 大数据表不在加载时展开：整表只保留一份行文本 + 行偏移表，访问哪行才解析哪行。
 /// </summary>
-public class CodeGenerator
+public partial class CodeGenerator
 {
     private static readonly HashSet<string> CSharpKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1385,6 +1385,9 @@ public class CodeGenerator
         sb.AppendLine("            int start = row[0] == '[' ? 1 : 0;");
         sb.AppendLine("            int end = row.IndexOf(',', start);");
         sb.AppendLine("            if (end < 0) end = row.Length;");
+        sb.AppendLine();
+        sb.AppendLine("            // 单列表的行形如 \"[1]\"，把结尾的 ] 和空白去掉再解析");
+        sb.AppendLine("            while (end > start && (row[end - 1] == ']' || char.IsWhiteSpace(row[end - 1]))) end--;");
         sb.AppendLine();
         sb.AppendLine("            int value;");
         sb.AppendLine("            return int.TryParse(row.Substring(start, end - start), out value) ? value : 0;");

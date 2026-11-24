@@ -221,6 +221,9 @@ namespace Game.Config
             int end = row.IndexOf(',', start);
             if (end < 0) end = row.Length;
 
+            // 单列表的行形如 "[1]"，把结尾的 ] 和空白去掉再解析
+            while (end > start && (row[end - 1] == ']' || char.IsWhiteSpace(row[end - 1]))) end--;
+
             int value;
             return int.TryParse(row.Substring(start, end - start), out value) ? value : 0;
         }

@@ -1,6 +1,6 @@
 # Excel转游戏配置工具
 
-基于 .NET 8 的 Excel 配置导出工具，支持导出 JSON、TypeScript（Cocos）、C#（Unity）。
+基于 .NET 8 的 Excel 配置导出工具，支持导出 JSON、TypeScript（Cocos）、C#（Unity）和 Java（服务端）。
 
 ## 一、功能特性
 
@@ -12,6 +12,7 @@
 - ✅ 继承支持（extend 列）
 - ✅ 枚举表特殊处理
 - ✅ 客户端/服务端导出控制（client/server 列）
+- ✅ Java 服务端产物对接 Jackson（jackson-databind），与常见 Java 服务端技术栈一致
 
 ## 二、Excel 格式规范
 
@@ -146,6 +147,47 @@ export class _language {
 export const _lang = new _language();
 ```
 
+### 5. Java 格式（服务端）
+
+产物落在 `Java/game/config/`，包名 `game.config`，整个 `game` 目录直接拷进 `src/main/java` 即可。
+生成代码依赖 **Jackson**（`JsonNode` / `ObjectMapper`），没有其他第三方依赖：
+
+```xml
+<dependency>
+    <groupId>com.fasterxml.jackson.core</groupId>
+    <artifactId>jackson-databind</artifactId>
+    <version>2.17.2</version>
+</dependency>
+```
+
+JDK 8+ 均可编译；Gradle 用 `implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'`。
+
+```java
+ExcelData data = new ExcelData();
+data.initLanguage("zh-Hans", read("i10n/zh-Hans.json"));
+data.load("example", read("Json/example.json"));
+
+ExampleConfig cfg = data.getExample();
+int hp = cfg.getGameArgConfig().getInitHp();          // 参数表
+int lvHp = cfg.getRoleLevelList().findByIndex(0).getHp();
+Item item = cfg.getItemMap().findById(1001);          // 主键表
+List<GrowthData> group = cfg.getGrowthDataGroup().findGroupById(1); // 分组表
+Enums.EquipType type = cfg.getEquipMap().findById(3).getType();
+```
+
+生成规则：
+
+| 页签类型 | Java 类 | 访问方式 |
+|---|---|---|
+| 主键表 | `Item` + `ItemMap` | `findById(int)` / `forEach(BiConsumer)` / `getCount()` |
+| 数组表 | `RoleLevel` + `RoleLevelList` | `findByIndex(int)` / `forEach` / `getCount()` |
+| 分组表 | `GrowthData` + `GrowthDataGroup` | `findGroupById(int)` 返回 `List<T>` |
+| 参数表 | `GameArgConfig` | 各字段 getter |
+| 枚举表 | `Enums.EquipType` | `Enums.EquipType.of(int)`，找不到返回 null |
+
+每个 Excel 文件还有一个配置根（`ExampleConfig`），`ExcelData` 是全部文件的总入口。
+实体同样只在访问字段时才解析本行；容器只存行文本 + 主键索引，不驻留整表对象。
+
 ## 四、目录结构
 
 ```
@@ -156,7 +198,8 @@ ExcelToGame/
 │   ├── ExcelReader.cs      # Excel读取（NPOI）
 │   ├── TypeChecker.cs      # 类型检查
 │   ├── LanguageGenerator.cs # 多语言生成
-│   └── CodeGenerator.cs    # 代码生成
+│   ├── CodeGenerator.cs    # 代码生成（JSON / TS / C#）
+│   └── JavaGenerator.cs    # Java 服务端代码生成
 ├── Models/
 │   ├── FieldInfo.cs        # 字段信息
 │   └── SheetData.cs        # Sheet数据
@@ -188,17 +231,28 @@ dotnet build -c Release
 
 # 指定输入输出路径
 ./bin/Release/net8.0/ExcelToGame.exe [Excel目录] [输出目录]
+
+# 只出服务端 Java 产物（服务端导出默认已包含 Java，这里显式指定更清晰）
+./bin/Release/net8.0/ExcelToGame.exe 表格数据 OutputExp-server --target server --lang java
+
+# 语言开关：--ts / --cs / --java，或 --lang ts,cs,java
+./bin/Release/net8.0/ExcelToGame.exe 表格数据 Output --target client --lang ts,cs
 ```
+
+不指定语言时：客户端导出 TS + C#；服务端导出 TS + C# + Java。
 
 ### 4. 输出目录
 
 ```
 Output/
-├── Json/           # JSON配置文件
-├── TS/             # TypeScript代码
+├── Json/                  # JSON配置文件
+├── TS/                    # TypeScript代码
 │   └── _language.ts
-├── CSharp/         # C#代码
-└── language.json   # 多语言文件
+├── CSharp/                # C#代码
+├── Java/                  # Java服务端代码（包名 game.config）
+│   └── game/config/*.java
+└── i10n/
+    └── zh-Hans.json       # 多语言文件
 ```
 
 ## 六、Excel 示例
