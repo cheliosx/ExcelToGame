@@ -28,7 +28,6 @@
             "args": [
                 "${workspaceFolder}",
                 "${workspaceFolder}/OutputExp",
-                "--compact"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
