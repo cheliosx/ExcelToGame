@@ -100,16 +100,40 @@ if (equip) { /* 说明 3 号道具是装备 */ }
 
 全局产物（只生成一份）：
 
-- `language.json` + `TS/_language.ts`：所有表的多语言文本
+- `i10n/zh-Hans.json` + `TS/_language.ts`：所有表的多语言文本（默认语言固定为 `zh-Hans`）
 - `TS/_enums.ts` + `CSharp/Enums.cs`：所有枚举，任何文件的实体都能直接引用
-- `TS/_runtime.ts` + `CSharp/Runtime.cs`：行数据容器等运行时，避免每个文件重复
-- `TS/ExcelData.ts`：统一入口，登记目录下所有表格文件
+- `TS/_runtime.ts` + `CSharp/Runtime.cs`：`_parseKey` / `ConfigTable` / `ConfigValue` 等共用运行时
+- `TS/ExcelData.ts` + `CSharp/ExcelData.cs`：统一入口，登记目录下所有表格文件
 
 每个 Excel 文件：
 
 - `Json/{OutputName}.json`
-- `TS/_{OutputName}.ts`：`namespace` 实体 + 表容器 + `_<OutputName>` 入口
-- `CSharp/{OutputName}.cs`：`Game.Config` 下的同名结构
+- `TS/_{OutputName}.ts`：`_表名` 实体 + `_表名Map/List/Group` 容器 + `_{OutputName}` 根类
+- `CSharp/{OutputName}.cs`：`Game.Config` 下的同名结构（`Item` / `ItemMap` / `ExampleConfig`）
+
+生成的 TS 平铺导出、不套 namespace：
+
+```ts
+export class _item {                      // 一行数据，getter 按列取
+    public _data: string | null;          // 原始行文本，首次解析后置空
+    private get objects(): any[];         // 懒解析
+}
+
+export class _itemMap {                   // 主键表
+    public init(_data: any[]): void;      // 只建 主键 -> 行号 索引
+    public findById(id): _item | undefined;
+    public forEach(cb): void;
+    public get count(): number;
+}
+
+export class _roleLevelList { public findByIndex(index): _roleLevel | undefined; }   // 数组表
+export class _growthDataGroup { public findGroupById(id): _growthData[] | undefined; } // 分组表
+
+export class _example {
+    public itemMap: _itemMap = new _itemMap();
+    public load(data: any) { this.itemMap.init(data.item); }
+}
+```
 
 > 输出名取文件名方括号内的英文名：`J-技能表[skill].xlsx` → `skill`；没有英文名时去掉中文，`example[表格示例].xlsx` → `example`。
 
@@ -125,42 +149,39 @@ if (equip) { /* 说明 3 号道具是装备 */ }
 - 输出目录里**不要放自己的文件**（会被整体清空），需要保留的代码请放在输出目录之外
 - 工具拒绝把输出目录设为：输入目录本身或其父目录、磁盘根目录、含 `.git` 的仓库根目录
 
-### language.json 的 id 是稳定的
+### 语言文件的 id 是稳定的
 
-生成语言表之前，工具会先读一次**输出目录里已有的 `language.json`**，按文本内容复用旧的 id：
+生成语言表之前，工具会先读一次**输出目录里已有的 `i10n/zh-Hans.json`**（旧版本放在根目录的 `language.json` 也兼容），按文本内容复用旧的 id：
 
 | 操作 | 结果 |
 |---|---|
 | 表格内容不变，重新导出 | 所有 id 不变（再次导出文件完全一致） |
 | 新增一行文本 | 新增条目拿新 id（旧 id 最大值 + 1），已有条目 id 不变 |
-| 删除一行文本 | 该条目从 `language.json` 中消失，其它 id 不变 |
+| 删除一行文本 | 该条目从 `zh-Hans.json` 中消失，其它 id 不变 |
 | 在不同表之间移动同一段文本 | id 跟着文本走，不变 |
 | 修改某段文本 | 视为新文本，分配新 id，旧 id 释放 |
 | 同一段文本出现多次 | 仍按出现次数各占一个 id，按旧文件顺序依次复用 |
 
-因此不要手动调整 `language.json` 的 key；改文本会换 id，这是有意为之（避免旧译文错配到新文本上）。
+因此不要手动调整 `i10n/zh-Hans.json` 的 key；改文本会换 id，这是有意为之（避免旧译文错配到新文本上）。
 
 ### 大数据表的存储方式
 
-行数据不会展开成对象数组，每行只是一条字符串，**一行一条**，便于 diff：
+每张表就是一个**字符串数组**，一项一行，内容是该行的紧凑 JSON：
 
 ```json
 {
   "gameArg": {
-    "fields": {
-      "gameName": "1",
-      "initHp": 100
-    }
+    "gameName": "1",
+    "initHp": 100
   },
-  "item": {
-    "ids": [1,2,3,4],
-    "rows": [
-      "[1,\"2\",\"1\"]",
-      "[2,\"3\",\"2\"]",
-      "[3,\"4\",\"1\"]",
-      "[4,\"5\",\"2\"]"
-    ]
-  }
+  "roleLevel": [
+    "[400,0]",
+    "[600,0]"
+  ],
+  "item": [
+    "[1,\"2\",\"1\"]",
+    "[2,\"3\",\"2\"]"
+  ]
 }
 ```
 
@@ -174,48 +195,69 @@ JSON 里只有数据本身：
 ExcelToGame <输入目录> <输出目录>
 ```
 
-加载时把 `rows` 拼成一份文本，再扫一遍换行生成行偏移表（`Int32Array`，4 字节/行）。**不会创建任何行对象**。
+加载过程分三层，每一层都只做必要的事：
 
-访问时：
+| 阶段 | 做的事 | 代价 |
+|---|---|---|
+| `load(json)` | 把表读成 `string[]` | 一次 `JSON.parse` |
+| `init(_data)` | 主键表建 `主键 -> 行号`；分组表建 `键 -> 行号列表`；数组表什么都不做 | `indexOf(',')` 扫一遍首列，不解析行 |
+| `findById(id)` | 定位行号后 `new _item(row)` | 创建 1 个轻量实体 |
+| 读字段 | `JSON.parse(row)` + 缓存 | 每行只解析一次 |
 
-- `get(id)`：用 `ids` 二分定位行号（ids 已升序则零额外索引，否则建一张 4 字节/行的排序表），只解析这一行
-- `getGroup(id)`：首次调用时扫描行首列建分组索引，之后直接取行号
-- `get(index)`（数组表）：按偏移直接解析
+所以 10 万行的表加载后只驻留：行字符串数组 + 一张索引，**没有被访问过的行永远不会被解析**。
+
+```ts
+// 初始化 0 次解析，findById 0 次，读字段才 1 次
+const item = configs.example.itemMap.findById(3);   // 定位行 + 创建实体
+item.id;                                            // 这里才 JSON.parse
+```
 
 TS 用法：
 
 ```ts
-_lang.load(languageJson);
-
 const configs = new ExcelData();
 configs.init("example", exampleJson);   // 只解析外层，行数据仍是文本
-configs.init("skill", skillJson);
+configs.init("attr", attrJson);
 
-const item = configs.example.item.get(3);              // item | undefined，此时才解析第 3 行
-const equip = configs.example.equip.get(3);            // equip | undefined
-const hp = configs.example.growthData.getGroup(1)[0].hp;
-const lv = configs.skill.skillLvRef.getGroup(1001)[0].lv;
+// 多语言：i10n/zh-Hans.json；切语言就再调一次
+configs.initLanguage("zh-Hans", zhHansJson);
 
-configs.example.item.count;                    // 行数，无需遍历
-configs.example.item.forEach((row, i) => {});  // 全表遍历：逐行创建，不驻留
+const item = configs.example.itemMap.findById(3);            // 定位到第 3 行
+const id = item.id;                                          // 读字段时才解析本行
+const equip = configs.example.equipMap.findById(3);
+const hp = configs.example.growthDataGroup.findGroupById(1)[0].hp;
+const lv = configs.example.roleLevelList.findByIndex(0).hp;
+
+configs.example.itemMap.count;                    // 行数，无需遍历
+configs.example.itemMap.forEach((row, i) => {});  // 全表遍历：逐行创建，不驻留
 ```
 
 C# 用法：
 
 ```csharp
-LanguageManager.Load(languageJson);
+var data = new ExcelData();
+data.InitLanguage("zh-Hans", File.ReadAllText("i10n/zh-Hans.json"));
+data.Load("example", exampleJson);
+data.Load("attr", attrJson);
 
-var example = new ExampleConfig();
-example.Load(exampleJson);
+Item item = data.Example.ItemMap.FindById(3);
+Equip equip = data.Example.EquipMap.FindById(3);
+var hp = data.Example.GrowthDataGroup.FindGroupById(1)[0].Hp;
+var lv = data.Example.RoleLevelList.FindByIndex(0).Hp;
+var initHp = data.Example.GameArg.InitHp;
 
-var skill = new SkillConfig();
-skill.Load(skillJson);
-
-Item item = example.Item.Get(3);
-Equip equip = example.Equip.Get(3);
-var hp = example.GrowthData.GetGroup(1)[0].Hp;
-SkillType type = skill.SkillRef.Get(1001).Type;
+data.Lang;   // "zh-Hans"
 ```
+
+`ExcelData` 与 TS 版一一对应：
+
+| 能力 | TS | C# |
+|---|---|---|
+| 加载一个表格 | `init(fileName, data)` | `Load(fileName, json)` |
+| 加载多语言 | `initLanguage(lang, texts)` | `InitLanguage(lang, json)` |
+| 当前语言 | `configs.lang` | `data.Lang` |
+
+文件名与语言码都不区分大小写；未知文件名直接抛错。
 
 ### 跨表引用枚举
 
@@ -233,15 +275,11 @@ const type: TableEnums.equipType = item.type;
 EquipType type = item.Type;
 ```
 
-cfg.Item.Count;
-cfg.Item.ForEach((row, i) => { });
-```
-
 ### 注意
 
-- 没有 `all` 属性：一次性物化几十万行正是要避免的事，需要全表就 `forEach`
-- `get` 的结果按 id 缓存（玩家只会访问少量行，缓存很小）；`forEach` 不缓存
-- 参数表（行数极少）仍是普通对象，不走文本格式
+- 没有 `all` 属性：一次性物化几十万行正是要避免的事，需要全表就 `forEach` / 遍历 `Count`
+- `findById` 的结果按 id 缓存（玩家只会访问少量行，缓存很小）；`forEach` 不缓存
+- 参数表（行数极少）仍是普通对象：根类里直接 `this.gameArg._data = data.gameArg`，不走文本格式
 
 ## 七、导出前校验
 

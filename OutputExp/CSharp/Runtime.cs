@@ -28,128 +28,56 @@ namespace Game.Config
     }
 
     /// <summary>
-    /// 行数据容器：整表只保留一份文本和行偏移表，
+    /// 行数据容器：只保存原始行文本数组，
     /// 访问某行时才解析该行，避免一次性创建几十万个数组。
     /// </summary>
     public sealed class ConfigTable
     {
-        private readonly string _text;
-        private readonly int[] _offsets;
+        private string[] _rows = Array.Empty<string>();
 
-        public ConfigTable(string text)
+        public int Count { get { return _rows.Length; } }
+
+        /// <summary>由 JSON 的字符串数组加载</summary>
+        public void Load(string json)
         {
-            _text = text ?? string.Empty;
-            _offsets = SplitLines(_text);
-        }
-
-        public int Count { get { return _offsets.Length - 1; } }
-
-        /// <summary>由 JSON 的 rows（逐行字符串数组）拼成单块文本</summary>
-        public static string ExtractText(JsonElement root)
-        {
-            JsonElement rows;
-            if (!root.TryGetProperty("rows", out rows) || rows.ValueKind != JsonValueKind.Array)
-            {
-                return string.Empty;
-            }
-
-            var parts = new List<string>();
-            foreach (var item in rows.EnumerateArray())
-            {
-                parts.Add(item.GetString());
-            }
-
-            return string.Join("\n", parts);
+            _rows = ConfigValue.ToRows(json);
         }
 
         public ConfigRow Row(int index)
         {
-            return new ConfigRow(this, index);
-        }
-
-        /// <summary>解析第 index 行，只创建这一行的数组</summary>
-        public object[] ParseRow(int index)
-        {
-            if (index < 0 || index >= Count) return Array.Empty<object>();
-
-            int start = _offsets[index];
-            int length = _offsets[index + 1] - start;
-            var values = new List<object>();
-
-            using (var doc = JsonDocument.Parse(_text.Substring(start, length)))
-            {
-                foreach (var cell in doc.RootElement.EnumerateArray())
-                {
-                    values.Add(ConfigValue.ToObject(cell));
-                }
-            }
-
-            return values.ToArray();
+            return new ConfigRow(index < _rows.Length ? _rows[index] : null);
         }
 
         /// <summary>只读取行首的数值（分组键），不解析整行</summary>
         public int ReadKey(int index)
         {
-            int i = _offsets[index];
-            int end = _offsets[index + 1];
-            if (i < end && _text[i] == '[') i++;
-
-            int sign = 1;
-            int value = 0;
-            bool hit = false;
-
-            for (; i < end; i++)
-            {
-                char c = _text[i];
-                if (c >= '0' && c <= '9')
-                {
-                    value = value * 10 + (c - '0');
-                    hit = true;
-                }
-                else if (c == '-')
-                {
-                    sign = -1;
-                }
-                else if (hit)
-                {
-                    break;
-                }
-            }
-
-            return sign * value;
-        }
-
-        private static int[] SplitLines(string text)
-        {
-            if (text.Length == 0) return new int[] { 0 };
-
-            var offsets = new List<int> { 0 };
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (text[i] == '\n') offsets.Add(i + 1);
-            }
-
-            offsets.Add(text.Length);
-            return offsets.ToArray();
+            return ConfigValue.ReadKey(_rows[index]);
         }
     }
 
     /// <summary>一行数据：首次访问字段时才解析</summary>
     public sealed class ConfigRow
     {
-        private readonly ConfigTable _table;
-        private readonly int _index;
+        private string _data;
         private object[] _values;
 
-        public ConfigRow(ConfigTable table, int index)
+        public ConfigRow(string data)
         {
-            _table = table;
-            _index = index;
+            _data = data;
         }
 
         public object[] Values
         {
-            get { return _values ?? (_values = _table.ParseRow(_index)); }
+            get
+            {
+                if (_values == null)
+                {
+                    _values = ConfigValue.ParseRow(_data);
+                    _data = null;
+                }
+
+                return _values;
+            }
         }
     }
 
@@ -265,48 +193,53 @@ namespace Game.Config
             return list;
         }
 
-        public static int[] ToIntArray(JsonElement cell)
+        /// <summary>把 JSON 根节点（字符串数组）读成行文本数组</summary>
+        public static string[] ToRows(string json)
         {
-            var values = new List<int>();
-            if (cell.ValueKind != JsonValueKind.Array) return values.ToArray();
-            foreach (var item in cell.EnumerateArray()) values.Add(ToInt(item));
-            return values.ToArray();
-        }
+            if (string.IsNullOrEmpty(json)) return Array.Empty<string>();
 
-        /// <summary>ids 已升序时返回 null，否则返回按 id 排序的行号表</summary>
-        public static int[] BuildOrder(int[] ids)
-        {
-            for (int i = 1; i < ids.Length; i++)
+            using (var doc = JsonDocument.Parse(json))
             {
-                if (ids[i] <= ids[i - 1])
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) return Array.Empty<string>();
+
+                var rows = new List<string>();
+                foreach (var item in doc.RootElement.EnumerateArray())
                 {
-                    var order = new int[ids.Length];
-                    for (int j = 0; j < order.Length; j++) order[j] = j;
-                    Array.Sort(order, (a, b) => ids[a].CompareTo(ids[b]));
-                    return order;
+                    rows.Add(item.ValueKind == JsonValueKind.String ? item.GetString() : item.GetRawText());
                 }
-            }
 
-            return null;
+                return rows.ToArray();
+            }
         }
 
-        /// <summary>二分查找主键所在行，找不到返回 -1</summary>
-        public static int IndexOfKey(int[] ids, int[] order, int id)
+        /// <summary>从 "[1,...]" 里取首列数字（主键 / 分组键）</summary>
+        public static int ReadKey(string row)
         {
-            int low = 0;
-            int high = ids.Length - 1;
+            if (string.IsNullOrEmpty(row)) return 0;
 
-            while (low <= high)
+            int start = row[0] == '[' ? 1 : 0;
+            int end = row.IndexOf(',', start);
+            if (end < 0) end = row.Length;
+
+            int value;
+            return int.TryParse(row.Substring(start, end - start), out value) ? value : 0;
+        }
+
+        /// <summary>解析一行文本</summary>
+        public static object[] ParseRow(string row)
+        {
+            if (string.IsNullOrEmpty(row)) return Array.Empty<object>();
+
+            using (var doc = JsonDocument.Parse(row))
             {
-                int mid = (low + high) >> 1;
-                int row = order == null ? mid : order[mid];
-                int value = ids[row];
+                var values = new List<object>();
+                foreach (var cell in doc.RootElement.EnumerateArray())
+                {
+                    values.Add(ToObject(cell));
+                }
 
-                if (value == id) return row;
-                if (value < id) low = mid + 1; else high = mid - 1;
+                return values.ToArray();
             }
-
-            return -1;
         }
     }
 }

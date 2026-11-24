@@ -46,47 +46,48 @@ namespace Game.Config
     }
 
     /// <summary>属性表</summary>
-    public class AttrRefTable
+    public class AttrRefMap
     {
-        private ConfigTable _table = new ConfigTable(string.Empty);
-        private int[] _ids = Array.Empty<int>();
-        private int[] _order;
-        private readonly Dictionary<int, AttrRef> _cache = new Dictionary<int, AttrRef>();
+        private readonly ConfigTable _table = new ConfigTable();
+
+        /// <summary>主键 -> 行号</summary>
+        private readonly Dictionary<int, int> _index = new Dictionary<int, int>();
+
+        /// <summary>已访问过的行（只缓存用到的实体）</summary>
+        private readonly Dictionary<int, AttrRef> _data = new Dictionary<int, AttrRef>();
 
         public int Count => _table.Count;
 
         public void Load(string json)
         {
-            using (var doc = JsonDocument.Parse(json))
-            {
-                var root = doc.RootElement;
-                _table = new ConfigTable(ConfigTable.ExtractText(root));
-                _ids = root.TryGetProperty("ids", out var ids) ? ConfigValue.ToIntArray(ids) : Array.Empty<int>();
-            }
+            _table.Load(json);
+            _index.Clear();
+            _data.Clear();
 
-            _cache.Clear();
-            _order = ConfigValue.BuildOrder(_ids);
+            for (int i = 0; i < _table.Count; i++)
+            {
+                _index[_table.ReadKey(i)] = i;
+            }
         }
 
-        /// <summary>按主键取一行；只解析被访问的行，并缓存已取过的实体</summary>
-        public AttrRef Get(int id)
+        /// <summary>按主键取一行：定位到行号后才创建实体并解析</summary>
+        public AttrRef FindById(int id)
         {
             AttrRef cached;
-            if (_cache.TryGetValue(id, out cached)) return cached;
+            if (_data.TryGetValue(id, out cached)) return cached;
 
-            int row = ConfigValue.IndexOfKey(_ids, _order, id);
-            if (row < 0) return null;
+            int row;
+            if (!_index.TryGetValue(id, out row)) return null;
 
             var entity = new AttrRef(_table.Row(row));
-            _cache[id] = entity;
+            _data[id] = entity;
             return entity;
         }
 
         /// <summary>全表遍历：逐行创建实体，不驻留整表对象</summary>
         public void ForEach(Action<AttrRef, int> callback)
         {
-            int count = _table.Count;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < _table.Count; i++)
             {
                 callback(new AttrRef(_table.Row(i)), i);
             }
@@ -96,7 +97,7 @@ namespace Game.Config
     /// <summary>S-属性[Attr] 配置根</summary>
     public class AttrConfig
     {
-        public AttrRefTable AttrRef { get; } = new AttrRefTable();
+        public AttrRefMap AttrRefMap { get; } = new AttrRefMap();
 
         public void Load(string json)
         {
@@ -104,7 +105,7 @@ namespace Game.Config
             {
                 var root = doc.RootElement;
                 JsonElement section;
-                if (root.TryGetProperty("attrRef", out section)) AttrRef.Load(section.GetRawText());
+                if (root.TryGetProperty("attrRef", out section)) AttrRefMap.Load(section.GetRawText());
             }
         }
     }

@@ -72,7 +72,7 @@ class Program
         // 语言 key 复用上一次的结果，避免表格改动导致已有条目 id 漂移
         var allSheets = allExcelData.SelectMany(e => e.DataSheets).ToList();
         var langGenerator = new LanguageGenerator();
-        langGenerator.LoadExisting(Path.Combine(outputDir, "language.json"));
+        langGenerator.LoadExisting(FindLanguageFile(outputDir));
         langGenerator.CollectLanguages(allSheets);
 
         // 全部产物先写进临时目录，成功后再整体替换正式目录
@@ -82,14 +82,16 @@ class Program
         var jsonDir = Path.Combine(stagingDir, "Json");
         var tsDir = Path.Combine(stagingDir, "TS");
         var csDir = Path.Combine(stagingDir, "CSharp");
+        var langDir = Path.Combine(stagingDir, LanguageGenerator.Directory);
 
         try
         {
             FileUtil.EnsureDirectory(jsonDir);
             FileUtil.EnsureDirectory(tsDir);
             FileUtil.EnsureDirectory(csDir);
+            FileUtil.EnsureDirectory(langDir);
 
-            await langGenerator.ExportLanguageJson(Path.Combine(stagingDir, "language.json"));
+            await langGenerator.ExportLanguageJson(Path.Combine(langDir, LanguageGenerator.DefaultFileName));
             await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
 
             // 全局产物：运行时 + 所有枚举各汇总成一份 TS / C# 文件，另生成 TS 统一入口
@@ -97,6 +99,7 @@ class Program
             await codeGenerator.GenerateRuntime(tsDir, csDir);
             await codeGenerator.GenerateEnums(allSheets, tsDir, csDir);
             await codeGenerator.GenerateEntry(allExcelData, tsDir);
+            await codeGenerator.GenerateCsEntry(allExcelData, csDir);
 
             // 每个 Excel 文件一套数据与实体
             var builder = new SchemaBuilder(validator.Types);
@@ -140,5 +143,21 @@ class Program
         Logger.Info("========================================");
 
         return 0;
+    }
+
+    /// <summary>
+    /// 上一次导出的语言文件：优先 i10n/zh-Hans.json，
+    /// 兼容旧版本放在输出目录根部的 language.json（避免升级时 id 全部重排）。
+    /// </summary>
+    private static string FindLanguageFile(string outputDir)
+    {
+        var current = Path.Combine(outputDir, LanguageGenerator.Directory, LanguageGenerator.DefaultFileName);
+        if (File.Exists(current))
+        {
+            return current;
+        }
+
+        var legacy = Path.Combine(outputDir, "language.json");
+        return File.Exists(legacy) ? legacy : current;
     }
 }

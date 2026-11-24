@@ -115,7 +115,7 @@ namespace Game.Config
         {
             using (var doc = JsonDocument.Parse(json))
             {
-                if (!doc.RootElement.TryGetProperty("fields", out var fields)) return;
+                var fields = doc.RootElement;
                 JsonElement cell;
                 if (fields.TryGetProperty("gameName", out cell)) GameName = LanguageManager.GetText(ConfigValue.ToStr(cell));
                 if (fields.TryGetProperty("initHp", out cell)) InitHp = ConfigValue.ToInt(cell);
@@ -126,47 +126,48 @@ namespace Game.Config
     }
 
     /// <summary>道具</summary>
-    public class ItemTable
+    public class ItemMap
     {
-        private ConfigTable _table = new ConfigTable(string.Empty);
-        private int[] _ids = Array.Empty<int>();
-        private int[] _order;
-        private readonly Dictionary<int, Item> _cache = new Dictionary<int, Item>();
+        private readonly ConfigTable _table = new ConfigTable();
+
+        /// <summary>主键 -> 行号</summary>
+        private readonly Dictionary<int, int> _index = new Dictionary<int, int>();
+
+        /// <summary>已访问过的行（只缓存用到的实体）</summary>
+        private readonly Dictionary<int, Item> _data = new Dictionary<int, Item>();
 
         public int Count => _table.Count;
 
         public void Load(string json)
         {
-            using (var doc = JsonDocument.Parse(json))
-            {
-                var root = doc.RootElement;
-                _table = new ConfigTable(ConfigTable.ExtractText(root));
-                _ids = root.TryGetProperty("ids", out var ids) ? ConfigValue.ToIntArray(ids) : Array.Empty<int>();
-            }
+            _table.Load(json);
+            _index.Clear();
+            _data.Clear();
 
-            _cache.Clear();
-            _order = ConfigValue.BuildOrder(_ids);
+            for (int i = 0; i < _table.Count; i++)
+            {
+                _index[_table.ReadKey(i)] = i;
+            }
         }
 
-        /// <summary>按主键取一行；只解析被访问的行，并缓存已取过的实体</summary>
-        public Item Get(int id)
+        /// <summary>按主键取一行：定位到行号后才创建实体并解析</summary>
+        public Item FindById(int id)
         {
             Item cached;
-            if (_cache.TryGetValue(id, out cached)) return cached;
+            if (_data.TryGetValue(id, out cached)) return cached;
 
-            int row = ConfigValue.IndexOfKey(_ids, _order, id);
-            if (row < 0) return null;
+            int row;
+            if (!_index.TryGetValue(id, out row)) return null;
 
             var entity = new Item(_table.Row(row));
-            _cache[id] = entity;
+            _data[id] = entity;
             return entity;
         }
 
         /// <summary>全表遍历：逐行创建实体，不驻留整表对象</summary>
         public void ForEach(Action<Item, int> callback)
         {
-            int count = _table.Count;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < _table.Count; i++)
             {
                 callback(new Item(_table.Row(i)), i);
             }
@@ -174,47 +175,48 @@ namespace Game.Config
     }
 
     /// <summary>装备</summary>
-    public class EquipTable
+    public class EquipMap
     {
-        private ConfigTable _table = new ConfigTable(string.Empty);
-        private int[] _ids = Array.Empty<int>();
-        private int[] _order;
-        private readonly Dictionary<int, Equip> _cache = new Dictionary<int, Equip>();
+        private readonly ConfigTable _table = new ConfigTable();
+
+        /// <summary>主键 -> 行号</summary>
+        private readonly Dictionary<int, int> _index = new Dictionary<int, int>();
+
+        /// <summary>已访问过的行（只缓存用到的实体）</summary>
+        private readonly Dictionary<int, Equip> _data = new Dictionary<int, Equip>();
 
         public int Count => _table.Count;
 
         public void Load(string json)
         {
-            using (var doc = JsonDocument.Parse(json))
-            {
-                var root = doc.RootElement;
-                _table = new ConfigTable(ConfigTable.ExtractText(root));
-                _ids = root.TryGetProperty("ids", out var ids) ? ConfigValue.ToIntArray(ids) : Array.Empty<int>();
-            }
+            _table.Load(json);
+            _index.Clear();
+            _data.Clear();
 
-            _cache.Clear();
-            _order = ConfigValue.BuildOrder(_ids);
+            for (int i = 0; i < _table.Count; i++)
+            {
+                _index[_table.ReadKey(i)] = i;
+            }
         }
 
-        /// <summary>按主键取一行；只解析被访问的行，并缓存已取过的实体</summary>
-        public Equip Get(int id)
+        /// <summary>按主键取一行：定位到行号后才创建实体并解析</summary>
+        public Equip FindById(int id)
         {
             Equip cached;
-            if (_cache.TryGetValue(id, out cached)) return cached;
+            if (_data.TryGetValue(id, out cached)) return cached;
 
-            int row = ConfigValue.IndexOfKey(_ids, _order, id);
-            if (row < 0) return null;
+            int row;
+            if (!_index.TryGetValue(id, out row)) return null;
 
             var entity = new Equip(_table.Row(row));
-            _cache[id] = entity;
+            _data[id] = entity;
             return entity;
         }
 
         /// <summary>全表遍历：逐行创建实体，不驻留整表对象</summary>
         public void ForEach(Action<Equip, int> callback)
         {
-            int count = _table.Count;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < _table.Count; i++)
             {
                 callback(new Equip(_table.Row(i)), i);
             }
@@ -222,24 +224,31 @@ namespace Game.Config
     }
 
     /// <summary>角色等级</summary>
-    public class RoleLevelTable
+    public class RoleLevelList
     {
-        private ConfigTable _table = new ConfigTable(string.Empty);
+        private readonly ConfigTable _table = new ConfigTable();
+
+        /// <summary>已访问过的行（只缓存用到的实体）</summary>
+        private readonly Dictionary<int, RoleLevel> _data = new Dictionary<int, RoleLevel>();
 
         public int Count => _table.Count;
 
         public void Load(string json)
         {
-            using (var doc = JsonDocument.Parse(json))
-            {
-                _table = new ConfigTable(ConfigTable.ExtractText(doc.RootElement));
-            }
+            _table.Load(json);
+            _data.Clear();
         }
 
-        public RoleLevel Get(int index)
+        public RoleLevel FindByIndex(int index)
         {
             if (index < 0 || index >= _table.Count) return null;
-            return new RoleLevel(_table.Row(index));
+
+            RoleLevel cached;
+            if (_data.TryGetValue(index, out cached)) return cached;
+
+            var entity = new RoleLevel(_table.Row(index));
+            _data[index] = entity;
+            return entity;
         }
 
         public void ForEach(Action<RoleLevel, int> callback)
@@ -255,56 +264,59 @@ namespace Game.Config
     /// <summary>成长数据</summary>
     public class GrowthDataGroup
     {
-        private ConfigTable _table = new ConfigTable(string.Empty);
-        private Dictionary<int, List<int>> _groups;
+        private readonly ConfigTable _table = new ConfigTable();
+
+        /// <summary>分组键 -> 行号列表</summary>
+        private readonly Dictionary<int, List<int>> _index = new Dictionary<int, List<int>>();
+
+        /// <summary>已访问过的行（只缓存用到的实体）</summary>
+        private readonly Dictionary<int, GrowthData> _data = new Dictionary<int, GrowthData>();
 
         public int Count => _table.Count;
 
         public void Load(string json)
         {
-            using (var doc = JsonDocument.Parse(json))
-            {
-                _table = new ConfigTable(ConfigTable.ExtractText(doc.RootElement));
-            }
+            _table.Load(json);
+            _index.Clear();
+            _data.Clear();
 
-            _groups = null;
+            for (int i = 0; i < _table.Count; i++)
+            {
+                int key = _table.ReadKey(i);
+                List<int> rows;
+                if (!_index.TryGetValue(key, out rows))
+                {
+                    rows = new List<int>();
+                    _index.Add(key, rows);
+                }
+
+                rows.Add(i);
+            }
         }
 
-        public IReadOnlyList<GrowthData> GetGroup(int id)
+        public IReadOnlyList<GrowthData> FindGroupById(int id)
         {
-            EnsureGroups();
-
             List<int> rows;
-            if (!_groups.TryGetValue(id, out rows)) return null;
+            if (!_index.TryGetValue(id, out rows)) return null;
 
             var result = new List<GrowthData>(rows.Count);
             for (int i = 0; i < rows.Count; i++)
             {
-                result.Add(new GrowthData(_table.Row(rows[i])));
+                result.Add(GetEntity(rows[i]));
             }
 
             return result;
         }
 
-        /// <summary>分组索引懒构建：首次按组查询时才扫描行首列</summary>
-        private void EnsureGroups()
+        /// <summary>同一行只创建一次实体</summary>
+        private GrowthData GetEntity(int row)
         {
-            if (_groups != null) return;
+            GrowthData cached;
+            if (_data.TryGetValue(row, out cached)) return cached;
 
-            _groups = new Dictionary<int, List<int>>();
-            int count = _table.Count;
-            for (int i = 0; i < count; i++)
-            {
-                int key = _table.ReadKey(i);
-                List<int> rows;
-                if (!_groups.TryGetValue(key, out rows))
-                {
-                    rows = new List<int>();
-                    _groups.Add(key, rows);
-                }
-
-                rows.Add(i);
-            }
+            var entity = new GrowthData(_table.Row(row));
+            _data[row] = entity;
+            return entity;
         }
     }
 
@@ -312,10 +324,10 @@ namespace Game.Config
     public class ExampleConfig
     {
         public GameArgConfig GameArg { get; } = new GameArgConfig();
-        public RoleLevelTable RoleLevel { get; } = new RoleLevelTable();
-        public ItemTable Item { get; } = new ItemTable();
-        public EquipTable Equip { get; } = new EquipTable();
-        public GrowthDataGroup GrowthData { get; } = new GrowthDataGroup();
+        public RoleLevelList RoleLevelList { get; } = new RoleLevelList();
+        public ItemMap ItemMap { get; } = new ItemMap();
+        public EquipMap EquipMap { get; } = new EquipMap();
+        public GrowthDataGroup GrowthDataGroup { get; } = new GrowthDataGroup();
 
         public void Load(string json)
         {
@@ -324,10 +336,10 @@ namespace Game.Config
                 var root = doc.RootElement;
                 JsonElement section;
                 if (root.TryGetProperty("gameArg", out section)) GameArg.Load(section.GetRawText());
-                if (root.TryGetProperty("roleLevel", out section)) RoleLevel.Load(section.GetRawText());
-                if (root.TryGetProperty("item", out section)) Item.Load(section.GetRawText());
-                if (root.TryGetProperty("equip", out section)) Equip.Load(section.GetRawText());
-                if (root.TryGetProperty("growthData", out section)) GrowthData.Load(section.GetRawText());
+                if (root.TryGetProperty("roleLevel", out section)) RoleLevelList.Load(section.GetRawText());
+                if (root.TryGetProperty("item", out section)) ItemMap.Load(section.GetRawText());
+                if (root.TryGetProperty("equip", out section)) EquipMap.Load(section.GetRawText());
+                if (root.TryGetProperty("growthData", out section)) GrowthDataGroup.Load(section.GetRawText());
             }
         }
     }

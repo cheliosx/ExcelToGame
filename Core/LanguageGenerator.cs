@@ -14,6 +14,12 @@ namespace ExcelToGame.Core;
 /// </summary>
 public class LanguageGenerator
 {
+    /// <summary>多语言产物目录</summary>
+    public const string Directory = "i10n";
+
+    /// <summary>默认语言文件名（目前表格里填的原文就是简体中文）</summary>
+    public const string DefaultFileName = "zh-Hans.json";
+
     /// <summary>本次导出实际用到的 key -> 文本</summary>
     private readonly Dictionary<string, string> _texts = new();
 
