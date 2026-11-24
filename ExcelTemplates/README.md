@@ -96,16 +96,53 @@ if (equip) { /* 说明 3 号道具是装备 */ }
 
 ## 六、产物与加载方式
 
-每个 Excel 文件生成：
+工具读取**输入目录下的所有 `*.xlsx`**（一次运行处理全部文件），产物分两类：
+
+全局产物（只生成一份）：
+
+- `language.json` + `TS/_language.ts`：所有表的多语言文本
+- `TS/_enums.ts` + `CSharp/Enums.cs`：所有枚举，任何文件的实体都能直接引用
+- `TS/_runtime.ts` + `CSharp/Runtime.cs`：行数据容器等运行时，避免每个文件重复
+- `TS/ExcelData.ts`：统一入口，登记目录下所有表格文件
+
+每个 Excel 文件：
 
 - `Json/{OutputName}.json`
-- `TS/_{OutputName}.ts`：运行时 + `namespace` 实体 + 表容器 + `_<OutputName>` 入口
+- `TS/_{OutputName}.ts`：`namespace` 实体 + 表容器 + `_<OutputName>` 入口
 - `CSharp/{OutputName}.cs`：`Game.Config` 下的同名结构
-- 全局 `language.json` 与 `TS/_language.ts`
+
+> 输出名取文件名方括号内的英文名：`J-技能表[skill].xlsx` → `skill`；没有英文名时去掉中文，`example[表格示例].xlsx` → `example`。
+
+### 输出方式是"整体替换"
+
+1. 所有产物先写进系统临时目录（`%TEMP%\ExcelToGame\<输出名>-<guid>`）
+2. 全部生成成功后，删除输出目录，把临时目录的内容整体复制过去
+3. 最后删除临时目录
+
+因此：
+
+- 生成中途失败（读取失败、校验不通过、模板报错）时，**原输出目录保持不变**，不会出现新旧混杂
+- 输出目录里**不要放自己的文件**（会被整体清空），需要保留的代码请放在输出目录之外
+- 工具拒绝把输出目录设为：输入目录本身或其父目录、磁盘根目录、含 `.git` 的仓库根目录
+
+### language.json 的 id 是稳定的
+
+生成语言表之前，工具会先读一次**输出目录里已有的 `language.json`**，按文本内容复用旧的 id：
+
+| 操作 | 结果 |
+|---|---|
+| 表格内容不变，重新导出 | 所有 id 不变（再次导出文件完全一致） |
+| 新增一行文本 | 新增条目拿新 id（旧 id 最大值 + 1），已有条目 id 不变 |
+| 删除一行文本 | 该条目从 `language.json` 中消失，其它 id 不变 |
+| 在不同表之间移动同一段文本 | id 跟着文本走，不变 |
+| 修改某段文本 | 视为新文本，分配新 id，旧 id 释放 |
+| 同一段文本出现多次 | 仍按出现次数各占一个 id，按旧文件顺序依次复用 |
+
+因此不要手动调整 `language.json` 的 key；改文本会换 id，这是有意为之（避免旧译文错配到新文本上）。
 
 ### 大数据表的存储方式
 
-行数据不会展开成对象数组，每行只是一条字符串。默认**一行一条**，便于 diff：
+行数据不会展开成对象数组，每行只是一条字符串，**一行一条**，便于 diff：
 
 ```json
 {
@@ -133,14 +170,11 @@ JSON 里只有数据本身：
 - 表类型、行数不写（由生成的容器与 `count` 推导）
 - 枚举表不产出数据（直接生成 `enum` 代码）
 
-打包发布时用 `--compact`，行数据会压成一个字符串 `data: "[1,\"2\",\"1\"]\n[2,\"3\",\"2\"]"`（此时表对象只有 `ids` 和 `data`），文件更小、解析峰值更低：
-
 ```
-ExcelToGame <输入目录> <输出目录>            # 默认：行数据逐行（rows）
-ExcelToGame <输入目录> <输出目录> --compact  # 紧凑：行数据单块（data）
+ExcelToGame <输入目录> <输出目录>
 ```
 
-两种格式生成代码都能读，加载时统一 `join("\n")` 成一份文本，再扫一遍换行生成行偏移表（`Int32Array`，4 字节/行）。**不会创建任何行对象**。
+加载时把 `rows` 拼成一份文本，再扫一遍换行生成行偏移表（`Int32Array`，4 字节/行）。**不会创建任何行对象**。
 
 访问时：
 
@@ -151,29 +185,53 @@ ExcelToGame <输入目录> <输出目录> --compact  # 紧凑：行数据单块�
 TS 用法：
 
 ```ts
-const cfg = new _example();
-cfg.load(exampleJson);            // 只解析外层，行数据仍是文本
 _lang.load(languageJson);
 
-const item = cfg.item.get(3);      // item | undefined，此时才解析第 3 行
-const equip = cfg.equip.get(3);    // equip | undefined
-const hp = cfg.growthData.getGroup(1)[0].hp;
-const initHp = cfg.gameArg.initHp;
+const configs = new ExcelData();
+configs.init("example", exampleJson);   // 只解析外层，行数据仍是文本
+configs.init("skill", skillJson);
 
-cfg.item.count;                    // 行数，无需遍历
-cfg.item.forEach((row, i) => {});  // 全表遍历：逐行创建，不驻留
+const item = configs.example.item.get(3);              // item | undefined，此时才解析第 3 行
+const equip = configs.example.equip.get(3);            // equip | undefined
+const hp = configs.example.growthData.getGroup(1)[0].hp;
+const lv = configs.skill.skillLvRef.getGroup(1001)[0].lv;
+
+configs.example.item.count;                    // 行数，无需遍历
+configs.example.item.forEach((row, i) => {});  // 全表遍历：逐行创建，不驻留
 ```
 
 C# 用法：
 
 ```csharp
 LanguageManager.Load(languageJson);
-var cfg = new ExampleConfig();
-cfg.Load(exampleJson);
 
-Item item = cfg.Item.Get(3);
-Equip equip = cfg.Equip.Get(3);
-var hp = cfg.GrowthData.GetGroup(1)[0].Hp;
+var example = new ExampleConfig();
+example.Load(exampleJson);
+
+var skill = new SkillConfig();
+skill.Load(skillJson);
+
+Item item = example.Item.Get(3);
+Equip equip = example.Equip.Get(3);
+var hp = example.GrowthData.GetGroup(1)[0].Hp;
+SkillType type = skill.SkillRef.Get(1001).Type;
+```
+
+### 跨表引用枚举
+
+任意表格的字段类型写 `example.equipType`（命名空间前缀可省），生成时统一到 `_enums.ts` / `Enums.cs`：
+
+```ts
+// TS：表格导出的枚举都在 TableEnums 命名空间下，与手写枚举区分
+import { TableEnums } from "./_enums";
+
+const type: TableEnums.equipType = item.type;
+```
+
+```csharp
+// C#：同 Game.Config 命名空间，直接用
+EquipType type = item.Type;
+```
 
 cfg.Item.Count;
 cfg.Item.ForEach((row, i) => { });

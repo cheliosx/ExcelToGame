@@ -21,15 +21,6 @@ public enum TableKind
     Enum
 }
 
-public class LanguageEntry
-{
-    public string Key { get; set; } = string.Empty;
-    public string Value { get; set; } = string.Empty;
-    public string SheetName { get; set; } = string.Empty;
-    public int RowId { get; set; }
-    public string FieldName { get; set; } = string.Empty;
-}
-
 public class EnumEntry
 {
     public string Name { get; set; } = string.Empty;
@@ -49,7 +40,6 @@ public class SheetData
 
     public List<FieldInfo> Fields { get; set; } = new();
     public List<Dictionary<string, object?>> Rows { get; set; } = new();
-    public List<LanguageEntry> LanguageEntries { get; set; } = new();
     public List<EnumEntry> EnumEntries { get; set; } = new();
 
     /// <summary>客户端可见字段（按表内声明顺序）</summary>

@@ -1,32 +1,43 @@
 import { _example } from "./_example";
+import { _Attr } from "./_Attr";
+
 /***
 * 该文件由工具自动生成，请勿手动修改
 */
-/** 数据表容器需要实现的加载契约 */
+/** 单个表格文件的数据入口需要实现的契约 */
 interface ITableContainer {
     load(data: any): void;
 }
+
 export class ExcelData {
-    protected _example: _example = new _example();
-    /** 表名 -> 数据容器；集中登记分发关系，避免用字符串索引 this */
-    protected readonly _tableMap: Record<string, ITableContainer> = {
+    protected readonly _example: _example = new _example();
+    protected readonly _Attr: _Attr = new _Attr();
+
+    /** 文件名 -> 数据入口 */
+    protected readonly _files: Record<string, ITableContainer> = {
         example: this._example,
+        Attr: this._Attr,
     };
+
     /**
-     * 按表名加载数据
-     * @param fileName 表名（不含下划线前缀，如 "example"）
-     * @param data 表格 JSON 数据
+     * 加载一个表格文件的 JSON
+     * @param fileName 文件名（输出名，如 "example"）
+     * @param data 该文件对应的 JSON
      */
-    public init(fileName: string, data: any) {
-        const table = this._tableMap[fileName];
-        // 表名不存在时立即报错，避免 obj.load 抛出难以定位的 undefined 错误
-        if (!table) {
-            throw new Error(`ExcelData: 未找到数据表 "${fileName}"`);
+    public init(fileName: string, data: any): void {
+        const file = this._files[fileName];
+        if (file === undefined) {
+            throw new Error(`ExcelData: 未找到配置文件 "${fileName}"`);
         }
-        table.load(data);
+        file.load(data);
     }
-    /** example[表格示例] */
+
     public get example(): _example {
         return this._example;
     }
+
+    public get Attr(): _Attr {
+        return this._Attr;
+    }
 }
+

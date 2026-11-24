@@ -27,11 +27,7 @@ public class CodeGenerator
 
     // ---------------------------------------------------------------- JSON
 
-    /// <param name="splitRows">
-    /// true：行数据输出成字符串数组，一行一条，方便 diff；
-    /// false：行数据压成一个字符串，文件更小、解析峰值更低。
-    /// </param>
-    public async Task GenerateJson(ExcelFileData file, List<TableSchema> schemas, string outputDir, bool splitRows)
+    public async Task GenerateJson(ExcelFileData file, List<TableSchema> schemas, string outputDir)
     {
         var result = new Dictionary<string, object?>();
 
@@ -40,12 +36,12 @@ public class CodeGenerator
         {
             result[schema.Name] = schema.Kind == TableKind.Param
                 ? new Dictionary<string, object?> { ["fields"] = BuildParamFields(schema) }
-                : BuildTablePayload(schema, splitRows);
+                : BuildTablePayload(schema);
         }
 
         var outputPath = Path.Combine(outputDir, $"{file.OutputName}.json");
         await FileUtil.WriteTextAsync(outputPath, ToReadableJson(result));
-        Logger.Success($"生成JSON: {outputPath}");
+        Logger.Success($"生成JSON: {Path.GetFileName(outputPath)}");
     }
 
     /// <summary>单值序列化选项：保留中文，不转义成 \uXXXX</summary>
@@ -125,13 +121,11 @@ public class CodeGenerator
     }
 
     /// <summary>
-    /// 行数据：每行是紧凑 JSON 数组。
-    /// splitRows = true 时输出 <c>rows: ["[1,2]", ...]</c>（一行一条，便于 diff）；
-    /// 否则拼成 <c>data: "[1,2]\n[3,4]"</c>（单块字符串，体积与解析峰值更小）。
+    /// 行数据：每行是紧凑 JSON 数组，输出成 <c>rows: ["[1,2]", ...]</c>，一行一条便于 diff。
+    /// 列名/下标、类型、行数都已固化到生成代码里，JSON 只放数据本身。
     /// </summary>
-    private static Dictionary<string, object?> BuildTablePayload(TableSchema schema, bool splitRows)
+    private static Dictionary<string, object?> BuildTablePayload(TableSchema schema)
     {
-        // 列名/下标、类型、行数都已固化到生成代码里，JSON 只放数据本身
         var payload = new Dictionary<string, object?>();
 
         if (schema.Kind == TableKind.Keyed && schema.KeyColumn != null)
@@ -145,15 +139,7 @@ public class CodeGenerator
             lines.Add(JsonSerializer.Serialize(row, InlineJsonOptions));
         }
 
-        if (splitRows)
-        {
-            payload["rows"] = new RowLines { Value = lines };
-        }
-        else
-        {
-            payload["data"] = string.Join("\n", lines);
-        }
-
+        payload["rows"] = new RowLines { Value = lines };
         return payload;
     }
 
@@ -187,24 +173,39 @@ public class CodeGenerator
         var sb = new StringBuilder();
         var ns = Ident(file.OutputName);
         var hasLanguage = schemas.Any(s => s.Columns.Any(c => c.Type.Kind == ValueKind.Language));
+        var usesEnums = UsesEnums(schemas);
 
         if (hasLanguage)
         {
             sb.AppendLine("import { _lang } from \"./_language\";");
+        }
+
+        // 枚举已统一生成到 _enums.ts 的 TableEnums 命名空间下
+        if (usesEnums)
+        {
+            sb.AppendLine("import { TableEnums } from \"./_enums\";");
+        }
+
+        // 行数据运行时统一放在 _runtime.ts，避免每个文件重复 200 行
+        var hasKeyed = schemas.Any(s => s.Kind == TableKind.Keyed && s.KeyColumn != null);
+        var hasDataTable = schemas.Any(s => s.Kind is TableKind.Keyed or TableKind.Array or TableKind.Group);
+
+        if (hasDataTable)
+        {
+            sb.AppendLine(hasKeyed
+                ? "import { _TableData, _TableIndex } from \"./_runtime\";"
+                : "import { _TableData } from \"./_runtime\";");
+        }
+
+        if (hasLanguage || usesEnums || hasDataTable)
+        {
             sb.AppendLine();
         }
 
         sb.AppendLine("/***");
         sb.AppendLine("* 该文件由工具自动生成，请勿手动修改");
         sb.AppendLine("*/");
-
-        WriteTsRuntime(sb);
         sb.AppendLine($"export namespace {ns} {{");
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Enum))
-        {
-            WriteTsEnum(sb, schema);
-        }
 
         // 每个页签一个实体类，彼此独立
         foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
@@ -239,7 +240,7 @@ public class CodeGenerator
 
         var outputPath = Path.Combine(outputDir, $"_{file.OutputName}.ts");
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"生成TS: {outputPath}");
+        Logger.Success($"生成TS: {Path.GetFileName(outputPath)}");
     }
 
     /// <summary>共享运行时：行文本容器 + 主键索引（整表只在内存里存一份字符串）</summary>
@@ -262,18 +263,12 @@ public class CodeGenerator
         sb.AppendLine("        return this._offsets.length - 1;");
         sb.AppendLine("    }");
         sb.AppendLine();
-        sb.AppendLine("    /** 兼容两种 JSON 形态：data（单块文本）或 rows（逐行字符串数组） */");
+        sb.AppendLine("    /** 由 JSON 的 rows（逐行字符串数组）构造 */");
         sb.AppendLine("    public static fromPayload(payload: any): _TableData {");
-        sb.AppendLine("        if (payload === null || payload === undefined) {");
+        sb.AppendLine("        if (payload === null || payload === undefined || !Array.isArray(payload.rows)) {");
         sb.AppendLine("            return new _TableData(\"\");");
         sb.AppendLine("        }");
-        sb.AppendLine("        if (payload.data !== undefined && payload.data !== null) {");
-        sb.AppendLine("            return new _TableData(payload.data);");
-        sb.AppendLine("        }");
-        sb.AppendLine("        if (Array.isArray(payload.rows)) {");
-        sb.AppendLine("            return new _TableData(payload.rows.join(\"\\n\"));");
-        sb.AppendLine("        }");
-        sb.AppendLine("        return new _TableData(\"\");");
+        sb.AppendLine("        return new _TableData(payload.rows.join(\"\\n\"));");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    /** 解析第 index 行，只创建这一行的数组 */");
@@ -370,15 +365,171 @@ public class CodeGenerator
         sb.AppendLine();
     }
 
-    private void WriteTsEnum(StringBuilder sb, TableSchema schema)
-    {
-        var name = Ident(schema.Name);
+    /// <summary>本文件的实体是否引用了枚举（决定要不要 import ./_enums）</summary>
+    private static bool UsesEnums(List<TableSchema> schemas) =>
+        schemas.Any(s => s.Columns.Any(c => c.Type.Kind == ValueKind.Enum));
 
-        sb.AppendLine($"    /** {schema.Sheet.ChineseName} */");
+    /// <summary>生成 TS 端统一入口 ExcelData.ts，登记目录下所有表格文件</summary>
+    public async Task GenerateEntry(List<ExcelFileData> files, string tsDir)
+    {
+        var sb = new StringBuilder();
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"import {{ _{name} }} from \"./_{name}\";");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("/***");
+        sb.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        sb.AppendLine("*/");
+        sb.AppendLine("/** 单个表格文件的数据入口需要实现的契约 */");
+        sb.AppendLine("interface ITableContainer {");
+        sb.AppendLine("    load(data: any): void;");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("export class ExcelData {");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"    protected readonly _{name}: _{name} = new _{name}();");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("    /** 文件名 -> 数据入口 */");
+        sb.AppendLine("    protected readonly _files: Record<string, ITableContainer> = {");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine($"        {name}: this._{name},");
+        }
+
+        sb.AppendLine("    };");
+        sb.AppendLine();
+        sb.AppendLine("    /**");
+        sb.AppendLine("     * 加载一个表格文件的 JSON");
+        sb.AppendLine("     * @param fileName 文件名（输出名，如 \"example\"）");
+        sb.AppendLine("     * @param data 该文件对应的 JSON");
+        sb.AppendLine("     */");
+        sb.AppendLine("    public init(fileName: string, data: any): void {");
+        sb.AppendLine("        const file = this._files[fileName];");
+        sb.AppendLine("        if (file === undefined) {");
+        sb.AppendLine("            throw new Error(`ExcelData: 未找到配置文件 \"${fileName}\"`);");
+        sb.AppendLine("        }");
+        sb.AppendLine("        file.load(data);");
+        sb.AppendLine("    }");
+
+        foreach (var file in files)
+        {
+            var name = Ident(file.OutputName);
+            sb.AppendLine();
+            sb.AppendLine($"    public get {name}(): _{name} {{");
+            sb.AppendLine($"        return this._{name};");
+            sb.AppendLine("    }");
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        var outputPath = Path.Combine(tsDir, "ExcelData.ts");
+        await FileUtil.WriteTextAsync(outputPath, sb.ToString());
+        Logger.Success($"生成TS入口: {Path.GetFileName(outputPath)}");
+    }
+
+    /// <summary>所有文件共用的行数据运行时，输出 TS/_runtime.ts 与 CSharp/Runtime.cs</summary>
+    public async Task GenerateRuntime(string tsDir, string csDir)
+    {
+        var ts = new StringBuilder();
+        ts.AppendLine("/***");
+        ts.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        ts.AppendLine("*/");
+        WriteTsRuntime(ts);
+
+        var tsPath = Path.Combine(tsDir, "_runtime.ts");
+        await FileUtil.WriteTextAsync(tsPath, ts.ToString());
+        Logger.Success($"生成TS运行时: {Path.GetFileName(tsPath)}");
+
+        var cs = new StringBuilder();
+        cs.AppendLine("// <auto-generated>");
+        cs.AppendLine("//     运行时，由 ExcelToGame 生成，请勿手动修改");
+        cs.AppendLine("// </auto-generated>");
+        cs.AppendLine("#nullable disable");
+        cs.AppendLine("using System;");
+        cs.AppendLine("using System.Collections.Generic;");
+        cs.AppendLine("using System.Text.Json;");
+        cs.AppendLine();
+        cs.AppendLine("namespace Game.Config");
+        cs.AppendLine("{");
+        WriteCsRuntime(cs);
+        cs.AppendLine("}");
+
+        var csPath = Path.Combine(csDir, "Runtime.cs");
+        await FileUtil.WriteTextAsync(csPath, cs.ToString());
+        Logger.Success($"生成C#运行时: {Path.GetFileName(csPath)}");
+    }
+
+    /// <summary>所有枚举统一输出到 TS/_enums.ts 与 CSharp/Enums.cs</summary>
+    public async Task GenerateEnums(List<SheetData> sheets, string tsDir, string csDir)
+    {
+        var enums = sheets.Where(s => s.Kind == TableKind.Enum).ToList();
+        if (enums.Count == 0)
+        {
+            Logger.Warning("没有枚举表，跳过枚举文件生成");
+            return;
+        }
+
+        var ts = new StringBuilder();
+        ts.AppendLine("/***");
+        ts.AppendLine("* 该文件由工具自动生成，请勿手动修改");
+        ts.AppendLine("*/");
+        ts.AppendLine("/**");
+        ts.AppendLine(" * 表格导出的枚举统一放在 TableEnums 命名空间下，");
+        ts.AppendLine(" * 与手写枚举区分开，也避免命名冲突。");
+        ts.AppendLine(" */");
+        ts.AppendLine("export namespace TableEnums {");
+        foreach (var sheet in enums)
+        {
+            AppendTsEnum(ts, sheet);
+        }
+
+        ts.AppendLine("}");
+
+        var tsPath = Path.Combine(tsDir, "_enums.ts");
+        await FileUtil.WriteTextAsync(tsPath, ts.ToString());
+        Logger.Success($"生成TS枚举: {Path.GetFileName(tsPath)}");
+
+        var cs = new StringBuilder();
+        cs.AppendLine("// <auto-generated>");
+        cs.AppendLine("//     枚举定义，由 ExcelToGame 生成，请勿手动修改");
+        cs.AppendLine("// </auto-generated>");
+        cs.AppendLine("#nullable disable");
+        cs.AppendLine();
+        cs.AppendLine("namespace Game.Config");
+        cs.AppendLine("{");
+        foreach (var sheet in enums)
+        {
+            AppendCsEnum(cs, sheet);
+        }
+
+        cs.AppendLine("}");
+
+        var csPath = Path.Combine(csDir, "Enums.cs");
+        await FileUtil.WriteTextAsync(csPath, cs.ToString());
+        Logger.Success($"生成C#枚举: {Path.GetFileName(csPath)}");
+    }
+
+    private static void AppendTsEnum(StringBuilder sb, SheetData sheet)
+    {
+        var name = Ident(sheet.SheetName);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        sb.AppendLine($"    /** {sheet.ChineseName} */");
         sb.AppendLine($"    export enum {name} {{");
 
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in schema.Sheet.EnumEntries)
+        foreach (var entry in sheet.EnumEntries)
         {
             var member = UniqueName(Ident(entry.Name), used);
             if (!string.IsNullOrWhiteSpace(entry.Comment))
@@ -386,6 +537,26 @@ public class CodeGenerator
                 sb.AppendLine($"        /** {entry.Comment} */");
             }
 
+            sb.AppendLine($"        {member} = {entry.Value},");
+        }
+
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private static void AppendCsEnum(StringBuilder sb, SheetData sheet)
+    {
+        var name = Pascal(sheet.SheetName);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        sb.AppendLine($"    /// <summary>{sheet.ChineseName}</summary>");
+        sb.AppendLine($"    public enum {name}");
+        sb.AppendLine("    {");
+
+        foreach (var entry in sheet.EnumEntries)
+        {
+            var member = UniqueName(SafeCsIdentifier(Pascal(entry.Name)), used);
+            sb.AppendLine($"        /// <summary>{entry.Comment}</summary>");
             sb.AppendLine($"        {member} = {entry.Value},");
         }
 
@@ -671,11 +842,7 @@ public class CodeGenerator
         sb.AppendLine("namespace Game.Config");
         sb.AppendLine("{");
 
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Enum))
-        {
-            WriteCsEnum(sb, schema);
-        }
-
+        // 枚举统一在 Enums.cs 中定义（同命名空间，直接可用）
         foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
         {
             WriteCsEntity(sb, schema);
@@ -702,33 +869,12 @@ public class CodeGenerator
         }
 
         WriteCsRoot(sb, file, schemas, rootClass);
-        WriteCsRuntime(sb);
 
         sb.AppendLine("}");
 
         var outputPath = Path.Combine(outputDir, $"{file.OutputName}.cs");
         await FileUtil.WriteTextAsync(outputPath, sb.ToString());
-        Logger.Success($"生成C#: {outputPath}");
-    }
-
-    private void WriteCsEnum(StringBuilder sb, TableSchema schema)
-    {
-        var name = Pascal(schema.Name);
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        sb.AppendLine($"    /// <summary>{schema.Sheet.ChineseName}</summary>");
-        sb.AppendLine($"    public enum {name}");
-        sb.AppendLine("    {");
-
-        foreach (var entry in schema.Sheet.EnumEntries)
-        {
-            var member = UniqueName(SafeCsIdentifier(Pascal(entry.Name)), used);
-            sb.AppendLine($"        /// <summary>{entry.Comment}</summary>");
-            sb.AppendLine($"        {member} = {entry.Value},");
-        }
-
-        sb.AppendLine("    }");
-        sb.AppendLine();
+        Logger.Success($"生成C#: {Path.GetFileName(outputPath)}");
     }
 
     private void WriteCsEntity(StringBuilder sb, TableSchema schema)
@@ -1034,26 +1180,22 @@ public class CodeGenerator
         sb.AppendLine();
         sb.AppendLine("        public int Count { get { return _offsets.Length - 1; } }");
         sb.AppendLine();
-        sb.AppendLine("        /// <summary>兼容两种 JSON 形态：data（单块文本）或 rows（逐行字符串数组）</summary>");
+        sb.AppendLine("        /// <summary>由 JSON 的 rows（逐行字符串数组）拼成单块文本</summary>");
         sb.AppendLine("        public static string ExtractText(JsonElement root)");
         sb.AppendLine("        {");
-        sb.AppendLine("            if (root.TryGetProperty(\"data\", out var data) && data.ValueKind == JsonValueKind.String)");
+        sb.AppendLine("            JsonElement rows;");
+        sb.AppendLine("            if (!root.TryGetProperty(\"rows\", out rows) || rows.ValueKind != JsonValueKind.Array)");
         sb.AppendLine("            {");
-        sb.AppendLine("                return data.GetString();");
+        sb.AppendLine("                return string.Empty;");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            if (root.TryGetProperty(\"rows\", out var rows) && rows.ValueKind == JsonValueKind.Array)");
+        sb.AppendLine("            var parts = new List<string>();");
+        sb.AppendLine("            foreach (var item in rows.EnumerateArray())");
         sb.AppendLine("            {");
-        sb.AppendLine("                var parts = new List<string>();");
-        sb.AppendLine("                foreach (var item in rows.EnumerateArray())");
-        sb.AppendLine("                {");
-        sb.AppendLine("                    parts.Add(item.GetString());");
-        sb.AppendLine("                }");
-        sb.AppendLine();
-        sb.AppendLine("                return string.Join(\"\\n\", parts);");
+        sb.AppendLine("                parts.Add(item.GetString());");
         sb.AppendLine("            }");
         sb.AppendLine();
-        sb.AppendLine("            return string.Empty;");
+        sb.AppendLine("            return string.Join(\"\\n\", parts);");
         sb.AppendLine("        }");
         sb.AppendLine();
         sb.AppendLine("        public ConfigRow Row(int index)");
@@ -1315,7 +1457,7 @@ public class CodeGenerator
             ValueKind.Bool => "boolean",
             ValueKind.String => "string",
             ValueKind.Language => "string",
-            ValueKind.Enum => Ident(type.Name),
+            ValueKind.Enum => "TableEnums." + Ident(type.Name),
             ValueKind.RowRef => "number",
             _ => "any"
         };

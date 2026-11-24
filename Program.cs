@@ -15,23 +15,14 @@ class Program
         Logger.Info("   Supports: JSON / TypeScript / C#");
         Logger.Info("========================================");
 
-        // 用法: ExcelToGame <输入目录> <输出目录> [--compact]
-        // 默认行数据逐行输出（方便 diff），--compact 时压成单块字符串（文件更小）
-        var options = args.Where(a => a.StartsWith("--")).Select(a => a.ToLowerInvariant()).ToHashSet();
+        // 用法: ExcelToGame <输入目录> <输出目录>
+        // 输入目录下的所有 .xlsx 会被一次性读取，枚举与多语言全局汇总
         var paths = args.Where(a => !a.StartsWith("--")).ToArray();
 
         var inputDir = paths.Length > 0 ? paths[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
         var outputDir = paths.Length > 1 ? paths[1] : Path.Combine(AppContext.BaseDirectory, "Output");
-        var splitRows = !options.Contains("--compact");
 
-        var jsonDir = Path.Combine(outputDir, "Json");
-        var tsDir = Path.Combine(outputDir, "TS");
-        var csDir = Path.Combine(outputDir, "CSharp");
-
-        FileUtil.EnsureDirectory(jsonDir);
-        FileUtil.EnsureDirectory(tsDir);
-        FileUtil.EnsureDirectory(csDir);
-
+        // 读取与校验都在写盘之前完成：这一步失败不会动到已有产物
         var excelFiles = FileUtil.GetExcelFiles(inputDir);
         if (excelFiles.Count == 0)
         {
@@ -40,7 +31,6 @@ class Program
         }
 
         Logger.Info($"Found {excelFiles.Count} Excel files");
-        Logger.Info(splitRows ? "JSON 行数据: 逐行输出 (rows)，便于 diff" : "JSON 行数据: 单块文本 (data)，体积更小");
 
         var allExcelData = new List<ExcelFileData>();
         var reader = new ExcelReader();
@@ -72,29 +62,77 @@ class Program
             return 1;
         }
 
-        // 收集语言文本（会就地替换行内的 language 单元格为 key）
+        var outputError = OutputPublisher.Validate(inputDir, outputDir);
+        if (outputError != null)
+        {
+            Logger.Error(outputError);
+            return 1;
+        }
+
+        // 语言 key 复用上一次的结果，避免表格改动导致已有条目 id 漂移
         var allSheets = allExcelData.SelectMany(e => e.DataSheets).ToList();
         var langGenerator = new LanguageGenerator();
-        langGenerator.CollectLanguages(allSheets, reader.GetNextLanguageId());
+        langGenerator.LoadExisting(Path.Combine(outputDir, "language.json"));
+        langGenerator.CollectLanguages(allSheets);
 
-        await langGenerator.ExportLanguageJson(Path.Combine(outputDir, "language.json"));
-        await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
+        // 全部产物先写进临时目录，成功后再整体替换正式目录
+        var stagingDir = OutputPublisher.CreateStaging(outputDir);
+        Logger.Info($"临时输出目录: {stagingDir}");
 
-        // 合并继承链后生成产物（每个 Excel 文件一套）
-        var builder = new SchemaBuilder(validator.Types);
-        var codeGenerator = new CodeGenerator();
+        var jsonDir = Path.Combine(stagingDir, "Json");
+        var tsDir = Path.Combine(stagingDir, "TS");
+        var csDir = Path.Combine(stagingDir, "CSharp");
 
-        for (int i = 0; i < allExcelData.Count; i++)
+        try
         {
-            var excelData = allExcelData[i];
-            Logger.Progress($"Generating {excelData.OutputName}...", i + 1, allExcelData.Count);
+            FileUtil.EnsureDirectory(jsonDir);
+            FileUtil.EnsureDirectory(tsDir);
+            FileUtil.EnsureDirectory(csDir);
 
-            var schemas = builder.Build(excelData);
+            await langGenerator.ExportLanguageJson(Path.Combine(stagingDir, "language.json"));
+            await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
 
-            await codeGenerator.GenerateJson(excelData, schemas, jsonDir, splitRows);
-            await codeGenerator.GenerateTypeScript(excelData, schemas, tsDir);
-            await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
+            // 全局产物：运行时 + 所有枚举各汇总成一份 TS / C# 文件，另生成 TS 统一入口
+            var codeGenerator = new CodeGenerator();
+            await codeGenerator.GenerateRuntime(tsDir, csDir);
+            await codeGenerator.GenerateEnums(allSheets, tsDir, csDir);
+            await codeGenerator.GenerateEntry(allExcelData, tsDir);
+
+            // 每个 Excel 文件一套数据与实体
+            var builder = new SchemaBuilder(validator.Types);
+
+            for (int i = 0; i < allExcelData.Count; i++)
+            {
+                var excelData = allExcelData[i];
+                Logger.Progress($"Generating {excelData.OutputName}...", i + 1, allExcelData.Count);
+
+                var schemas = builder.Build(excelData);
+
+                await codeGenerator.GenerateJson(excelData, schemas, jsonDir);
+                await codeGenerator.GenerateTypeScript(excelData, schemas, tsDir);
+                await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
+            }
         }
+        catch (Exception ex)
+        {
+            Logger.Error($"生成失败: {ex.Message}");
+            OutputPublisher.Cleanup(stagingDir);
+            return 1;
+        }
+
+        // 全部生成成功，才动正式目录
+        try
+        {
+            OutputPublisher.Publish(stagingDir, outputDir);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"替换输出目录失败: {ex.Message}");
+            Logger.Warning($"已生成的文件保留在临时目录: {stagingDir}");
+            return 1;
+        }
+
+        OutputPublisher.Cleanup(stagingDir);
 
         Logger.Info("========================================");
         Logger.Success("Export completed!");

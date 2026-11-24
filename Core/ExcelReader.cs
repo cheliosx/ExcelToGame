@@ -9,11 +9,6 @@ namespace ExcelToGame.Core;
 
 public class ExcelReader
 {
-    private int _languageId = 1; // 全局语言ID计数器，从1开始
-    
-    // 获取下一个可用的语言ID（已被使用的最大ID + 1）
-    public int GetNextLanguageId() => _languageId;
-    
     public ExcelFileData? ReadExcelFile(string filePath)
     {
         try
@@ -397,24 +392,10 @@ public class ExcelReader
                             ColumnIndex = valueColIdx
                         });
 
-                        // 处理language类型字段
-                        if (fieldType.Equals("language", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var langKey = $"{_languageId++}";
-                            sheetData.LanguageEntries.Add(new LanguageEntry
-                            {
-                                Key = langKey,
-                                Value = value,
-                                SheetName = sheetData.SheetName,
-                                RowId = dataStartRow,
-                                FieldName = key
-                            });
-                            paramValues[key] = langKey;
-                        }
-                        else
-                        {
-                            paramValues[key] = ParseValue(value, fieldType);
-                        }
+                        // language 字段先存原文，统一由 LanguageGenerator 分配 key
+                        paramValues[key] = fieldType.Equals("language", StringComparison.OrdinalIgnoreCase)
+                            ? value
+                            : ParseValue(value, fieldType);
                     }
                 }
                 else if (firstCell == "END")
@@ -543,27 +524,28 @@ public class ExcelReader
     private static string? NullIfEmpty(string value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private string CleanFileName(string fileName)
+    private static string CleanFileName(string fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName))
             return "config";
-            
-        // 先移除方括号内容
-        var result = Regex.Replace(fileName, @"\[.*?\]", "");
-        
-        // 移除中文字符（CJK统一表意文字范围）
-        result = Regex.Replace(result, "[\u4e00-\u9fa5]", "");
-        
-        // 清理多余字符
-        result = result.Trim('_', '-', ' ');
-        
-        // 如果清理后为空，返回默认值
-        if (string.IsNullOrWhiteSpace(result))
+
+        // 优先取方括号内的英文名：J-技能表[skill] -> skill
+        var bracket = Regex.Match(fileName, @"\[([^\]]+)\]");
+        if (bracket.Success)
         {
-            return "config";
+            var inner = new string(bracket.Groups[1].Value.Where(char.IsLetterOrDigit).ToArray());
+            if (inner.Length > 0 && inner.All(char.IsAscii))
+            {
+                return inner;
+            }
         }
-        
-        return result;
+
+        // 否则去掉方括号内容与中文，保留英文部分：example[表格示例] -> example
+        var result = Regex.Replace(fileName, @"\[.*?\]", "");
+        result = Regex.Replace(result, "[\u4e00-\u9fa5]", "");
+        result = result.Trim('_', '-', ' ');
+
+        return string.IsNullOrWhiteSpace(result) ? "config" : result;
     }
 
     private string GetCellValue(ICell? cell)

@@ -14,6 +14,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 生成产物不应参与工具自身的编译 -->
+    <Compile Remove="OutputExp\**" />
+    <None Remove="OutputExp\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="bin\Debug\net8.0\Excel\example[表格示例].xlsx" />
   </ItemGroup>
 
