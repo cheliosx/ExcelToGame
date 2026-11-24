@@ -1,7 +1,74 @@
 {
-    // 使用 IntelliSense 了解相关属性。 
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    // 调试配置：F5 启动调试，需要 C# 扩展（ms-dotnettools.csharp / C# Dev Kit）
+    // 项目为控制台程序，参数顺序：<Excel 所在目录> <输出目录> [--compact]
     "version": "0.2.0",
-    "configurations": []
+    "configurations": [
+        {
+            "name": "调试导出（默认参数）",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/ExcelToGame.dll",
+            "args": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/OutputExp"
+            ],
+            "cwd": "${workspaceFolder}",
+            // 用集成终端，Logger 的控制台颜色才正常显示
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "justMyCode": true
+        },
+        {
+            "name": "调试导出（--compact 紧凑 JSON）",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/ExcelToGame.dll",
+            "args": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/OutputExp",
+                "--compact"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "justMyCode": true
+        },
+        {
+            "name": "调试导出（自定义目录）",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/ExcelToGame.dll",
+            "args": [
+                "${input:inputDir}",
+                "${input:outputDir}"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "justMyCode": true
+        },
+        {
+            "name": "附加到 dotnet 进程",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "inputDir",
+            "type": "promptString",
+            "description": "Excel 所在目录",
+            "default": "${workspaceFolder}"
+        },
+        {
+            "id": "outputDir",
+            "type": "promptString",
+            "description": "输出目录",
+            "default": "${workspaceFolder}/OutputExp"
+        }
+    ]
 }

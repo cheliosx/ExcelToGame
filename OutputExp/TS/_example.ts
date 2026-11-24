@@ -478,7 +478,7 @@ export class growthDataGroup {
     }
 }
 
-/** example */
+/** example[表格示例] */
 export class _example {
     public gameArg: example.gameArg = new example.gameArg();
     public roleLevel: roleLevelList = new roleLevelList();
