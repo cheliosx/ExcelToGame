@@ -19,6 +19,10 @@ public class FieldInfo
     public bool ExportToClient { get; set; } = true;
     public bool ExportToServer { get; set; } = true;
 
+    /// <summary>该字段是否进目标端</summary>
+    public bool IsExportedTo(ExportTarget target) =>
+        target == ExportTarget.Server ? ExportToServer : ExportToClient;
+
     public bool IsLanguage => Type.Equals("language", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>是否为数组声明（array&lt;T&gt; / T[] / []）</summary>

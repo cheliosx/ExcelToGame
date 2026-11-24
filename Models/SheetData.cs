@@ -42,8 +42,12 @@ public class SheetData
     public List<Dictionary<string, object?>> Rows { get; set; } = new();
     public List<EnumEntry> EnumEntries { get; set; } = new();
 
-    /// <summary>客户端可见字段（按表内声明顺序）</summary>
-    public IEnumerable<FieldInfo> ClientFields => Fields.Where(f => f.ExportToClient);
+    /// <summary>该表是否导出到目标端（main 页签的 client / server 标记）</summary>
+    public bool IsExportedTo(ExportTarget target) =>
+        target == ExportTarget.Server ? ExportToServer : ExportToClient;
+
+    /// <summary>目标端可见字段（按表内声明顺序）</summary>
+    public IEnumerable<FieldInfo> FieldsFor(ExportTarget target) => Fields.Where(f => f.IsExportedTo(target));
 
     /// <summary>主键字段：名为 Id 的字段优先，否则取第一个字段</summary>
     public FieldInfo? KeyField =>

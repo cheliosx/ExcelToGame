@@ -24,6 +24,7 @@ main 用一张表定义本文件内所有数据页签：
 
 - `file`：Excel 中实际的页签名（中文）
 - `name`：英文类型名，直接用于生成代码
+- `client` / `server`：该表是否进客户端 / 服务端，`0`、`NO`、`FALSE` 表示关闭，留空视为开启
 - 第一列为导出开关，`TRUE`/`1` 导出，`END` 结束
 - 旧表格里的 `extend` / `继承` 列会被忽略（仅打印一条提示），不再产生继承关系
 
@@ -33,8 +34,8 @@ main 用一张表定义本文件内所有数据页签：
 |---|---|---|
 | 第1行 | 符号 | 字段名行，第一列为 `符号`，最后一列为 `END` |
 | 第2行 | 数据类型 | 字段类型声明 |
-| 第3行 | 客户端 | `YES` / `NO`，`NO` 的字段不导出到客户端 |
-| 第4行 | 服务端 | 同上（服务端产物暂未生成，仅保留配置） |
+| 第3行 | 客户端 | `YES` / `NO`，`NO` 的列不进客户端产物 |
+| 第4行 | 服务端 | 同上，`NO` 的列不进服务端产物 |
 | 第5行 | 名称 | 中文名，生成代码注释 |
 | 第6行 | 注释 | 补充说明，可留空 |
 | 第7行+ | 数据 | 第一列 `TRUE`/`1` 表示导出，`END` 结束 |
@@ -55,11 +56,11 @@ main 用一张表定义本文件内所有数据页签：
 
 | type | 说明 | 生成的容器 |
 |---|---|---|
-| 主建表 / 主键表 | 以 `id` 为键，一行一个实体 | `xxxTable`（`get(id)`） |
-| 数组表 | 按下标顺序访问 | `xxxList`（`get(index)`） |
-| 分组表 | 按首列分组，组内多行 | `xxxGroup`（`getGroup(key)`） |
-| 参数表 | key/value 转置，只有一行 | `xxx` 配置对象 |
-| 枚举 | key/value 枚举定义 | `enum xxx` |
+| 主建表 / 主键表 | 以 `id` 为键，一行一个实体 | `_xxx` + `_xxxMap`（`findById(id)`） |
+| 数组表 | 按下标顺序访问 | `_xxx` + `_xxxList`（`findByIndex(i)`） |
+| 分组表 | 按首列分组，组内多行 | `_xxx` + `_xxxGroup`（`findGroupById(key)`） |
+| 参数表 | key/value 转置，只有一行 | `_xxx` 配置对象（`_data`） |
+| 枚举 | key/value 枚举定义 | `enum xxx`（统一在 `_enums.ts` / `Enums.cs`） |
 
 ## 四、表之间怎么关联
 
@@ -136,6 +137,54 @@ export class _example {
 ```
 
 > 输出名取文件名方括号内的英文名：`J-技能表[skill].xlsx` → `skill`；没有英文名时去掉中文，`example[表格示例].xlsx` → `example`。
+
+### 按端导出（客户端 / 服务端）
+
+```
+ExcelToGame <输入目录> <输出目录>                    # 默认 client
+ExcelToGame <输入目录> <输出目录> --target server    # 也可以 --server
+ExcelToGame <输入目录> <输出目录> --target=server
+```
+
+> 全部参数与组合示例见[第九节](#九命令行参数)。
+
+筛选规则：
+
+| 层级 | 依据 | 说明 |
+|---|---|---|
+| 表 | main 页签的 `client` / `server` 列 | `0` / `NO` / `FALSE` 关闭，其余（含空）开启 |
+| 列 | 数据页签第 3、4 行的「客户端 / 服务端」 | `NO` 的列不进入该端产物 |
+
+- 未标记到该端的表不会出现在 JSON / TS / C# 中，`ExcelData` 入口也不登记它
+- 整个 xlsx 都没有属于该端的表时，这个文件整体跳过
+- 语言 key 与 `i10n/zh-Hans.json` 始终按**全量**收集：两端 id 保持一致，也只导出某一端时不会让另一端的译文丢 key
+
+两端通常输出到不同目录：
+
+```
+ExcelToGame 表格数据 ..\client\config
+ExcelToGame 表格数据 ..\server\config --target server
+```
+
+### 只导某一种语言
+
+```
+ExcelToGame <输入目录> <输出目录> --ts           # 只导 TypeScript
+ExcelToGame <输入目录> <输出目录> --cs           # 只导 C#
+ExcelToGame <输入目录> <输出目录> --lang ts,cs   # 两种都导（默认）
+```
+
+> 全部参数与组合示例见[第九节](#九命令行参数)。
+
+| 参数 | 产物目录 |
+|---|---|
+| `--ts` / `--lang ts` | `Json/` + `i10n/` + `TS/` |
+| `--cs` / `--lang cs` | `Json/` + `i10n/` + `CSharp/` |
+| 不指定 | 四个目录全出 |
+
+- `Json/` 与 `i10n/` 与语言无关，始终生成
+- 可与 `--target` 组合：`--target server --cs`
+- 语言只认 `ts` / `typescript`、`cs` / `csharp` / `c#`，写错直接报错并返回退出码 1
 
 ### 输出方式是"整体替换"
 
@@ -287,7 +336,7 @@ EquipType type = item.Type;
 
 1. 字段类型必须是基础类型、`array<T>`、`[]`，或已定义的枚举/表
 2. 枚举表的枚举名、枚举值不能重复，且至少有一项
-3. 主键表/分组表必须有主键字段，且主键必须导出到客户端
+3. 主键表/分组表必须有主键字段，且主键必须导出到**当前目标端**（`--target`）
 4. 主键/分组键必须是数字类型（`number`/`int` 或枚举），因为按 id 定位走的是数值索引
 5. 不同文件之间页签名不能重复（C# 共用一个命名空间）
 6. `main` 页签必须存在
@@ -299,3 +348,75 @@ EquipType type = item.Type;
 3. 第一列的导出开关为 `TRUE`/`1` 才导出该行，`END` 结束
 4. 字段名使用英文小驼峰；生成的 C# 会转成 PascalCase
 5. 导出时 Excel 文件不能被独占打开（否则会报"文件被占用"并中止）
+
+## 九、命令行参数
+
+```
+ExcelToGame <输入目录> <输出目录> [选项]
+```
+
+开发期用 `dotnet run` 时，`--` 之后才是程序自己的参数：
+
+```
+dotnet run --project ExcelToGame.csproj -- "表格数据" "OutputExp" --target server --cs
+```
+
+### 1. 位置参数
+
+| 参数 | 说明 |
+|---|---|
+| `<输入目录>` | 存放 `*.xlsx` 的目录，一次读取目录下全部表格（不递归子目录）；缺省为 `bin/Debug/net8.0/Excel` |
+| `<输出目录>` | 产物根目录，每次导出会**整体替换**；缺省为 `bin/Debug/net8.0/Output` |
+
+### 2. 选项
+
+| 选项 | 取值 | 默认 | 说明 |
+|---|---|---|---|
+| `--target <端>` | `client` / `server` | `client` | 按 main 页签的 `client` / `server` 列筛选表与列，详见第六节 |
+| `--client` | 无 | — | `--target client` 的简写 |
+| `--server` | 无 | — | `--target server` 的简写 |
+| `--ts` | 无 | — | 生成 `TS/` 目录 |
+| `--cs` | 无 | — | 生成 `CSharp/` 目录 |
+| `--lang <列表>` | `ts` / `cs` / `ts,cs` | — | 语言选择的组合写法，等价于 `--ts` / `--cs` |
+
+规则：
+
+- `--ts` / `--cs` / `--lang` 都不写时，默认 `ts,cs`（两种语言都导）
+- 只写其中一个就只生成那一个
+- `Json/` 与 `i10n/` 与语言无关，始终生成
+- 选项顺序任意，`--target server` 与 `--target=server` 都支持
+- 未知选项只打印一条 warning，不中断导出；但语言名写错会直接失败返回 1
+
+### 3. 退出码
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 导出成功 |
+| `1` | 读取失败 / 校验不通过 / 生成失败 / 替换输出目录失败 |
+
+替换失败时原输出目录保持不变，已生成的文件留在临时目录（日志里会打印路径），可以直接用于排查。
+
+### 4. 使用示例
+
+| 场景 | 命令 |
+|---|---|
+| 日常全量（客户端 + TS + C#） | `ExcelToGame 表格数据 OutputExp` |
+| 只导客户端 C# | `ExcelToGame 表格数据 OutputExp --cs` |
+| 只导客户端 TS | `ExcelToGame 表格数据 OutputExp --ts` |
+| 服务端（数据 + C#） | `ExcelToGame 表格数据 OutputExp-Server --server --cs` |
+| 服务端（数据 + 两种语言） | `ExcelToGame 表格数据 OutputExp-Server --target server` |
+| 显式指定两种语言 | `ExcelToGame 表格数据 OutputExp --lang ts,cs` |
+| 指定输入/输出目录 | `ExcelToGame D:\excel D:\game\config --cs --server` |
+| 开发期调试 | `dotnet run --project ExcelToGame.csproj -- "表格数据" "OutputExp" --cs` |
+
+两端分别输出的典型脚本：
+
+```bat
+:: client
+ExcelToGame 表格数据 ..\client\config --ts --cs
+if errorlevel 1 exit /b 1
+
+:: server
+ExcelToGame 表格数据 ..\server\config --target server --cs
+if errorlevel 1 exit /b 1
+```

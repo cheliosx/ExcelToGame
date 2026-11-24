@@ -204,8 +204,8 @@ public class ExcelReader
             {
                 Name = englishName,          // 英文名作为导出的类型名
                 ChineseName = chineseName,   // Excel 中实际的页签名
-                Client = clientCol >= 0 ? GetCellValue(row.GetCell(clientCol)) != "0" : true,
-                Server = serverCol >= 0 ? GetCellValue(row.GetCell(serverCol)) != "0" : true,
+                Client = clientCol >= 0 ? IsEnabled(GetCellValue(row.GetCell(clientCol))) : true,
+                Server = serverCol >= 0 ? IsEnabled(GetCellValue(row.GetCell(serverCol))) : true,
                 Type = typeValue
             };
 
@@ -312,8 +312,8 @@ public class ExcelReader
                 // 优先使用"名称"行的中文，缺失时退回"注释"行
                 Comment = string.IsNullOrWhiteSpace(chineseName) ? comment : chineseName,
                 ColumnIndex = col,
-                ExportToClient = clientExport != "NO" && clientExport != "0",
-                ExportToServer = serverExport != "NO" && serverExport != "0"
+                ExportToClient = IsEnabled(clientExport),
+                ExportToServer = IsEnabled(serverExport)
             });
 
             col++;
@@ -523,6 +523,16 @@ public class ExcelReader
 
     private static string? NullIfEmpty(string value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>client / server 列的开关值：0 / NO / FALSE 视为关闭，其余（含空）视为开启</summary>
+    private static bool IsEnabled(string value)
+    {
+        var text = (value ?? string.Empty).Trim();
+
+        return !(text.Equals("0", StringComparison.OrdinalIgnoreCase)
+                 || text.Equals("NO", StringComparison.OrdinalIgnoreCase)
+                 || text.Equals("FALSE", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static string CleanFileName(string fileName)
     {

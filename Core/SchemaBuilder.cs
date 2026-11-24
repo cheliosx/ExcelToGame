@@ -8,10 +8,12 @@ namespace ExcelToGame.Core;
 public sealed class SchemaBuilder
 {
     private readonly TypeRegistry _types;
+    private readonly ExportTarget _target;
 
-    public SchemaBuilder(TypeRegistry types)
+    public SchemaBuilder(TypeRegistry types, ExportTarget target)
     {
         _types = types;
+        _target = target;
     }
 
     public List<TableSchema> Build(ExcelFileData file)
@@ -32,8 +34,8 @@ public sealed class SchemaBuilder
             };
         }
 
-        // 只导出客户端可见字段，列顺序即数据页签中的字段顺序
-        var columns = sheet.ClientFields
+        // 只导出目标端可见字段，列顺序即数据页签中的字段顺序
+        var columns = sheet.FieldsFor(_target)
             .Select((field, index) => new SchemaColumn
             {
                 Field = field,

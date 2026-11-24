@@ -1,6 +1,6 @@
 {
     // 调试配置：F5 启动调试，需要 C# 扩展（ms-dotnettools.csharp / C# Dev Kit）
-    // 项目为控制台程序，参数顺序：<Excel 所在目录> <输出目录>
+    // 项目为控制台程序，参数顺序：<Excel 所在目录> <输出目录> [--target client|server]
     "version": "0.2.0",
     "configurations": [
         {
@@ -15,6 +15,23 @@
             ],
             "cwd": "${workspaceFolder}",
             // 用集成终端，Logger 的控制台颜色才正常显示
+            "console": "integratedTerminal",
+            "stopAtEntry": false,
+            "justMyCode": true
+        },
+        {
+            "name": "调试导出（服务端）",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0/ExcelToGame.dll",
+            "args": [
+                "${workspaceFolder}/表格数据",
+                "${workspaceFolder}/OutputExp-Server",
+                "--target",
+                "server"
+            ],
+            "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "stopAtEntry": false,
             "justMyCode": true

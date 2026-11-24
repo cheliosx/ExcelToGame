@@ -8,6 +8,20 @@ public class ExcelFileData
     public SheetData? MainSheet { get; set; }
     public List<SheetData> DataSheets { get; set; } = new();
     public List<SheetDefinition> SheetDefinitions { get; set; } = new();
+
+    /// <summary>只保留导出到目标端的页签（其余元数据原样带过来）</summary>
+    public ExcelFileData ForTarget(ExportTarget target)
+    {
+        return new ExcelFileData
+        {
+            FilePath = FilePath,
+            FileName = FileName,
+            OutputName = OutputName,
+            MainSheet = MainSheet,
+            SheetDefinitions = SheetDefinitions,
+            DataSheets = DataSheets.Where(s => s.IsExportedTo(target)).ToList()
+        };
+    }
 }
 
 /// <summary>

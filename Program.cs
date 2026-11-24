@@ -15,12 +15,103 @@ class Program
         Logger.Info("   Supports: JSON / TypeScript / C#");
         Logger.Info("========================================");
 
-        // 用法: ExcelToGame <输入目录> <输出目录>
+        // 用法: ExcelToGame <输入目录> <输出目录> [--target client|server] [--ts] [--cs] [--lang ts,cs]
         // 输入目录下的所有 .xlsx 会被一次性读取，枚举与多语言全局汇总
-        var paths = args.Where(a => !a.StartsWith("--")).ToArray();
+        var positionals = new List<string>();
+        var target = ExportTarget.Client;
+        var languages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var languageSpecified = false;
 
-        var inputDir = paths.Length > 0 ? paths[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
-        var outputDir = paths.Length > 1 ? paths[1] : Path.Combine(AppContext.BaseDirectory, "Output");
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!arg.StartsWith("--"))
+            {
+                positionals.Add(arg);
+                continue;
+            }
+
+            var (name, inlineValue) = SplitOption(arg);
+            switch (name)
+            {
+                case "target":
+                    var value = inlineValue ?? (i + 1 < args.Length ? args[++i] : string.Empty);
+                    if (!TryParseTarget(value, out target))
+                    {
+                        Logger.Error($"未知的导出目标: '{value}'，可选 client / server");
+                        return 1;
+                    }
+                    break;
+
+                case "client":
+                    target = ExportTarget.Client;
+                    break;
+
+                case "server":
+                    target = ExportTarget.Server;
+                    break;
+
+                case "ts":
+                case "typescript":
+                    languages.Add("ts");
+                    languageSpecified = true;
+                    break;
+
+                case "cs":
+                case "csharp":
+                    languages.Add("cs");
+                    languageSpecified = true;
+                    break;
+
+                case "lang":
+                    var spec = inlineValue ?? (i + 1 < args.Length ? args[++i] : string.Empty);
+                    languageSpecified = true;
+
+                    foreach (var part in spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        if (IsTypescript(part))
+                        {
+                            languages.Add("ts");
+                        }
+                        else if (IsCSharp(part))
+                        {
+                            languages.Add("cs");
+                        }
+                        else
+                        {
+                            Logger.Error($"未知的导出语言: '{part}'，可选 ts / cs");
+                            return 1;
+                        }
+                    }
+
+                    if (languages.Count == 0)
+                    {
+                        Logger.Error("--lang 不能为空，可选 ts / cs");
+                        return 1;
+                    }
+                    break;
+
+                default:
+                    Logger.Warning($"忽略未知参数: {arg}");
+                    break;
+            }
+        }
+
+        // 不指定就两种语言都导
+        if (!languageSpecified)
+        {
+            languages.Add("ts");
+            languages.Add("cs");
+        }
+
+        var emitTs = languages.Contains("ts");
+        var emitCs = languages.Contains("cs");
+
+        var inputDir = positionals.Count > 0 ? positionals[0] : Path.Combine(AppContext.BaseDirectory, "Excel");
+        var outputDir = positionals.Count > 1 ? positionals[1] : Path.Combine(AppContext.BaseDirectory, "Output");
+
+        Logger.Info($"导出目标: {target.ToDisplayName()} ({target.ToKey()})");
+        Logger.Info($"导出内容: JSON + i10n{(emitTs ? " + TypeScript" : string.Empty)}{(emitCs ? " + C#" : string.Empty)}");
 
         // 读取与校验都在写盘之前完成：这一步失败不会动到已有产物
         var excelFiles = FileUtil.GetExcelFiles(inputDir);
@@ -56,9 +147,34 @@ class Program
 
         // 类型与结构校验（不通过直接中止，避免把问题带到运行时）
         var validator = new SchemaValidator();
-        if (!validator.Validate(allExcelData))
+        if (!validator.Validate(allExcelData, target))
         {
             Logger.Error("校验失败，已中止导出");
+            return 1;
+        }
+
+        // 按 main 页签的 client / server 标记筛出本次要导出的表
+        var targetFiles = allExcelData
+            .Select(f => f.ForTarget(target))
+            .Where(f => f.DataSheets.Count > 0)
+            .ToList();
+
+        var targetSheets = targetFiles.SelectMany(f => f.DataSheets).ToList();
+        var totalSheets = allExcelData.Sum(f => f.DataSheets.Count);
+        Logger.Info($"参与导出 {targetSheets.Count} 张表（共 {totalSheets} 张）");
+
+        foreach (var file in allExcelData)
+        {
+            var skipped = file.DataSheets.Where(s => !s.IsExportedTo(target)).Select(s => s.SheetName).ToList();
+            if (skipped.Count > 0)
+            {
+                Logger.Info($"  跳过 {file.OutputName}: {string.Join(", ", skipped)}");
+            }
+        }
+
+        if (targetSheets.Count == 0)
+        {
+            Logger.Error($"没有任何表标记为导出到{target.ToDisplayName()}，请检查 main 页签的 {target.ToKey()} 列");
             return 1;
         }
 
@@ -87,33 +203,59 @@ class Program
         try
         {
             FileUtil.EnsureDirectory(jsonDir);
-            FileUtil.EnsureDirectory(tsDir);
-            FileUtil.EnsureDirectory(csDir);
             FileUtil.EnsureDirectory(langDir);
 
-            await langGenerator.ExportLanguageJson(Path.Combine(langDir, LanguageGenerator.DefaultFileName));
-            await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
+            if (emitTs)
+            {
+                FileUtil.EnsureDirectory(tsDir);
+            }
 
-            // 全局产物：运行时 + 所有枚举各汇总成一份 TS / C# 文件，另生成 TS 统一入口
+            if (emitCs)
+            {
+                FileUtil.EnsureDirectory(csDir);
+            }
+
+            await langGenerator.ExportLanguageJson(Path.Combine(langDir, LanguageGenerator.DefaultFileName));
+
+            // 全局产物：只生成被选中的语言
             var codeGenerator = new CodeGenerator();
-            await codeGenerator.GenerateRuntime(tsDir, csDir);
-            await codeGenerator.GenerateEnums(allSheets, tsDir, csDir);
-            await codeGenerator.GenerateEntry(allExcelData, tsDir);
-            await codeGenerator.GenerateCsEntry(allExcelData, csDir);
+
+            if (emitTs)
+            {
+                await langGenerator.GenerateLanguageClass(Path.Combine(tsDir, "_language.ts"));
+                await codeGenerator.GenerateTsRuntime(tsDir);
+                await codeGenerator.GenerateTsEnums(targetSheets, tsDir);
+                await codeGenerator.GenerateEntry(targetFiles, tsDir);
+            }
+
+            if (emitCs)
+            {
+                await codeGenerator.GenerateCsRuntime(csDir);
+                await codeGenerator.GenerateCsEnums(targetSheets, csDir);
+                await codeGenerator.GenerateCsEntry(targetFiles, csDir);
+            }
 
             // 每个 Excel 文件一套数据与实体
-            var builder = new SchemaBuilder(validator.Types);
+            var builder = new SchemaBuilder(validator.Types, target);
 
-            for (int i = 0; i < allExcelData.Count; i++)
+            for (int i = 0; i < targetFiles.Count; i++)
             {
-                var excelData = allExcelData[i];
-                Logger.Progress($"Generating {excelData.OutputName}...", i + 1, allExcelData.Count);
+                var excelData = targetFiles[i];
+                Logger.Progress($"Generating {excelData.OutputName}...", i + 1, targetFiles.Count);
 
                 var schemas = builder.Build(excelData);
 
                 await codeGenerator.GenerateJson(excelData, schemas, jsonDir);
-                await codeGenerator.GenerateTypeScript(excelData, schemas, tsDir);
-                await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
+
+                if (emitTs)
+                {
+                    await codeGenerator.GenerateTypeScript(excelData, schemas, tsDir);
+                }
+
+                if (emitCs)
+                {
+                    await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
+                }
             }
         }
         catch (Exception ex)
@@ -159,5 +301,45 @@ class Program
 
         var legacy = Path.Combine(outputDir, "language.json");
         return File.Exists(legacy) ? legacy : current;
+    }
+
+    /// <summary>把 --name=value 拆成名字与内联值</summary>
+    private static (string Name, string? Value) SplitOption(string arg)
+    {
+        var body = arg[2..];
+        var index = body.IndexOf('=');
+
+        return index < 0
+            ? (body.ToLowerInvariant(), null)
+            : (body[..index].ToLowerInvariant(), body[(index + 1)..]);
+    }
+
+    private static bool IsTypescript(string value) =>
+        value.Equals("ts", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("typescript", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCSharp(string value) =>
+        value.Equals("cs", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("csharp", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("c#", StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryParseTarget(string value, out ExportTarget target)
+    {
+        switch ((value ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "client":
+            case "c":
+                target = ExportTarget.Client;
+                return true;
+
+            case "server":
+            case "s":
+                target = ExportTarget.Server;
+                return true;
+
+            default:
+                target = ExportTarget.Client;
+                return false;
+        }
     }
 }
