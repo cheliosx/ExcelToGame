@@ -158,60 +158,174 @@ public partial class CodeGenerator
 
     // ---------------------------------------------------------------- 单个表格文件
 
+    /// <summary>
+    /// 一个 Excel 文件 = 一个 .java 文件：所有页签作为静态内部类嵌套在配置根里。
+    /// Java 一个文件只能有一个 public 顶层类，嵌套是唯一能把产物收成一份的做法。
+    /// </summary>
     public async Task GenerateJava(ExcelFileData file, List<TableSchema> schemas, string javaDir)
     {
-        var classes = new List<(string Name, string Content)>();
-
-        foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
-        {
-            classes.Add((Pascal(schema.Name), BuildJavaEntity(schema)));
-        }
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Param))
-        {
-            classes.Add((Pascal(schema.Name) + "Config", BuildJavaParam(schema)));
-        }
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Keyed))
-        {
-            classes.Add((Pascal(schema.Name) + "Map", BuildJavaMap(schema)));
-        }
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Array))
-        {
-            classes.Add((Pascal(schema.Name) + "List", BuildJavaList(schema)));
-        }
-
-        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Group))
-        {
-            classes.Add((Pascal(schema.Name) + "Group", BuildJavaGroup(schema)));
-        }
-
         var rootType = JavaRootType(file);
-        classes.Add((rootType, BuildJavaRoot(file, schemas, rootType)));
-
-        foreach (var (name, content) in classes)
-        {
-            await FileUtil.WriteTextAsync(Path.Combine(javaDir, $"{name}.java"), content);
-        }
-
-        Logger.Success($"生成Java: {classes.Count} 个类 ({file.OutputName})");
+        var path = Path.Combine(javaDir, $"{rootType}.java");
+        await FileUtil.WriteTextAsync(path, BuildJavaFile(file, schemas, rootType));
+        Logger.Success($"生成Java: {Path.GetFileName(path)}");
     }
 
-    /// <summary>实体类：一行一个对象，首次访问字段才解析本行</summary>
-    private static string BuildJavaEntity(TableSchema schema)
+    /// <summary>页签对应的内部类名：Entity 为行对象（参数表没有），Container 为表对象</summary>
+    private sealed record JavaNames(string? Entity, string Container);
+
+    /// <summary>分配内部类名：同一文件内重名自动加后缀，也避开与根类同名</summary>
+    private static Dictionary<TableSchema, JavaNames> BuildJavaNames(List<TableSchema> schemas, string rootType)
     {
-        var className = Pascal(schema.Name);
-        var fieldNames = BuildJavaFieldNames(schema);
+        var result = new Dictionary<TableSchema, JavaNames>();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { rootType };
+
+        foreach (var schema in schemas.Where(s => s.Kind != TableKind.Enum))
+        {
+            if (schema.Kind == TableKind.Param)
+            {
+                var container = UniqueName(JavaMember(Pascal(schema.Name) + "Config"), used);
+                result[schema] = new JavaNames(null, container);
+                continue;
+            }
+
+            var entity = UniqueName(JavaMember(Pascal(schema.Name)), used);
+            var suffix = schema.Kind switch
+            {
+                TableKind.Keyed => "Map",
+                TableKind.Array => "List",
+                _ => "Group"
+            };
+
+            result[schema] = new JavaNames(entity, UniqueName(JavaMember(entity + suffix), used));
+        }
+
+        return result;
+    }
+
+    private static string BuildJavaFile(ExcelFileData file, List<TableSchema> schemas, string rootType)
+    {
+        var containers = schemas.Where(s => s.Kind != TableKind.Enum).ToList();
+        var names = BuildJavaNames(schemas, rootType);
+
+        var needsMap = containers.Any(s => s.Kind is TableKind.Keyed or TableKind.Array or TableKind.Group);
+        var needsConsumer = containers.Any(s => s.Kind is TableKind.Keyed or TableKind.Array);
+        var needsList = containers.Any(s => s.Columns.Any(c => c.Type.IsArray))
+                        || containers.Any(s => s.Kind == TableKind.Group);
+        var needsArrayList = containers.Any(s => s.Kind == TableKind.Group)
+                             || containers.Any(s => s.Kind == TableKind.Param && s.Columns.Any(c => c.Type.IsArray));
 
         var sb = new StringBuilder();
         sb.AppendLine($"package {JavaPackage};");
         sb.AppendLine();
         sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine("import java.util.List;");
+        if (needsArrayList)
+        {
+            sb.AppendLine("import java.util.ArrayList;");
+        }
+
+        if (needsMap)
+        {
+            sb.AppendLine("import java.util.HashMap;");
+        }
+
+        if (needsList)
+        {
+            sb.AppendLine("import java.util.List;");
+        }
+
+        if (needsMap)
+        {
+            sb.AppendLine("import java.util.Map;");
+        }
+
+        if (needsConsumer)
+        {
+            sb.AppendLine("import java.util.function.BiConsumer;");
+        }
+
         sb.AppendLine();
+        sb.AppendLine($"/** {Doc(file.FileName)} 配置根：页签是内部类，用法见各 getter */");
+        sb.AppendLine($"public class {rootType} {{");
+
+        foreach (var schema in containers)
+        {
+            var type = names[schema].Container;
+            sb.AppendLine($"    private final {type} {LowerFirst(type)} = new {type}();");
+        }
+
+        foreach (var schema in containers)
+        {
+            var type = names[schema].Container;
+            sb.AppendLine();
+            sb.AppendLine($"    /** {Doc(schema.Sheet.ChineseName)} */");
+            sb.AppendLine($"    public {type} get{type}() {{");
+            sb.AppendLine($"        return {LowerFirst(type)};");
+            sb.AppendLine("    }");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("    /** 解析整个表格文件的 JSON，再分发到各张表 */");
+        sb.AppendLine("    public void load(String json) {");
+        sb.AppendLine("        JsonNode root = ConfigValue.parse(json);");
+        sb.AppendLine("        if (root == null || !root.isObject()) {");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        JsonNode section;");
+
+        foreach (var schema in containers)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"        section = root.get(\"{schema.Name}\");");
+            sb.AppendLine("        if (section != null && !section.isNull()) {");
+            sb.AppendLine($"            {LowerFirst(names[schema].Container)}.loadSection(section);");
+            sb.AppendLine("        }");
+        }
+
+        sb.AppendLine("    }");
+
+        foreach (var schema in schemas.Where(s => s.Kind is not (TableKind.Enum or TableKind.Param)))
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(BuildJavaEntity(schema, names[schema].Entity!), 4));
+        }
+
+        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Param))
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(BuildJavaParam(schema, names[schema].Container), 4));
+        }
+
+        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Keyed))
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(BuildJavaMap(schema, names[schema].Entity!, names[schema].Container), 4));
+        }
+
+        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Array))
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(BuildJavaList(schema, names[schema].Entity!, names[schema].Container), 4));
+        }
+
+        foreach (var schema in schemas.Where(s => s.Kind == TableKind.Group))
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(BuildJavaGroup(schema, names[schema].Entity!, names[schema].Container), 4));
+        }
+
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
+    /// <summary>实体类：一行一个对象，首次访问字段才解析本行</summary>
+    private static string BuildJavaEntity(TableSchema schema, string className)
+    {
+        var fieldNames = BuildJavaFieldNames(schema);
+
+        var sb = new StringBuilder();
         sb.AppendLine($"/** {Doc(schema.Sheet.ChineseName)} */");
-        sb.AppendLine($"public class {className} {{");
+        sb.AppendLine($"public static final class {className} {{");
         sb.AppendLine();
         sb.AppendLine("    private final ConfigRow _row;");
         sb.AppendLine();
@@ -238,20 +352,13 @@ public partial class CodeGenerator
     }
 
     /// <summary>参数表：key/value 转置，整表只有一个对象</summary>
-    private static string BuildJavaParam(TableSchema schema)
+    private static string BuildJavaParam(TableSchema schema, string className)
     {
-        var className = Pascal(schema.Name) + "Config";
         var fieldNames = BuildJavaFieldNames(schema);
 
         var sb = new StringBuilder();
-        sb.AppendLine($"package {JavaPackage};");
-        sb.AppendLine();
-        sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine("import java.util.ArrayList;");
-        sb.AppendLine("import java.util.List;");
-        sb.AppendLine();
         sb.AppendLine($"/** {Doc(schema.Sheet.ChineseName)} */");
-        sb.AppendLine($"public class {className} {{");
+        sb.AppendLine($"public static final class {className} {{");
 
         foreach (var column in schema.Columns)
         {
@@ -295,22 +402,12 @@ public partial class CodeGenerator
         return sb.ToString();
     }
 
-    /// <summary>主键表容器：主键 -> 行号索引，取行时才创建实体</summary>
-    private static string BuildJavaMap(TableSchema schema)
+    /// <summary>主键表：主键 -> 行号索引，取行时才创建实体</summary>
+    private static string BuildJavaMap(TableSchema schema, string entity, string className)
     {
-        var entity = Pascal(schema.Name);
-        var className = entity + "Map";
-
         var sb = new StringBuilder();
-        sb.AppendLine($"package {JavaPackage};");
-        sb.AppendLine();
-        sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine("import java.util.HashMap;");
-        sb.AppendLine("import java.util.Map;");
-        sb.AppendLine("import java.util.function.BiConsumer;");
-        sb.AppendLine();
         sb.AppendLine($"/** {Doc(schema.Sheet.ChineseName)} */");
-        sb.AppendLine($"public class {className} {{");
+        sb.AppendLine($"public static final class {className} {{");
         sb.AppendLine();
         sb.AppendLine("    private final ConfigTable _table = new ConfigTable();");
         sb.AppendLine();
@@ -365,22 +462,12 @@ public partial class CodeGenerator
         return sb.ToString();
     }
 
-    /// <summary>数组表容器：按下标访问，访问到的行才解析</summary>
-    private static string BuildJavaList(TableSchema schema)
+    /// <summary>数组表：按下标访问，访问到的行才解析</summary>
+    private static string BuildJavaList(TableSchema schema, string entity, string className)
     {
-        var entity = Pascal(schema.Name);
-        var className = entity + "List";
-
         var sb = new StringBuilder();
-        sb.AppendLine($"package {JavaPackage};");
-        sb.AppendLine();
-        sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine("import java.util.HashMap;");
-        sb.AppendLine("import java.util.Map;");
-        sb.AppendLine("import java.util.function.BiConsumer;");
-        sb.AppendLine();
         sb.AppendLine($"/** {Doc(schema.Sheet.ChineseName)} */");
-        sb.AppendLine($"public class {className} {{");
+        sb.AppendLine($"public static final class {className} {{");
         sb.AppendLine();
         sb.AppendLine("    private final ConfigTable _table = new ConfigTable();");
         sb.AppendLine();
@@ -424,23 +511,12 @@ public partial class CodeGenerator
         return sb.ToString();
     }
 
-    /// <summary>分组表容器：分组键 -> 行号列表</summary>
-    private static string BuildJavaGroup(TableSchema schema)
+    /// <summary>分组表：分组键 -> 行号列表</summary>
+    private static string BuildJavaGroup(TableSchema schema, string entity, string className)
     {
-        var entity = Pascal(schema.Name);
-        var className = entity + "Group";
-
         var sb = new StringBuilder();
-        sb.AppendLine($"package {JavaPackage};");
-        sb.AppendLine();
-        sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine("import java.util.ArrayList;");
-        sb.AppendLine("import java.util.HashMap;");
-        sb.AppendLine("import java.util.List;");
-        sb.AppendLine("import java.util.Map;");
-        sb.AppendLine();
         sb.AppendLine($"/** {Doc(schema.Sheet.ChineseName)} */");
-        sb.AppendLine($"public class {className} {{");
+        sb.AppendLine($"public static final class {className} {{");
         sb.AppendLine();
         sb.AppendLine("    private final ConfigTable _table = new ConfigTable();");
         sb.AppendLine();
@@ -505,54 +581,27 @@ public partial class CodeGenerator
         return sb.ToString();
     }
 
-    /// <summary>单个 Excel 文件的配置根：解析一次，按页签名分发到各容器</summary>
-    private static string BuildJavaRoot(ExcelFileData file, List<TableSchema> schemas, string rootType)
+    /// <summary>整块代码右移，用于把类嵌进配置根</summary>
+    private static string Indent(string text, int spaces)
     {
-        var containers = schemas.Where(s => s.Kind != TableKind.Enum).ToList();
-
+        var pad = new string(' ', spaces);
+        var lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
         var sb = new StringBuilder();
-        sb.AppendLine($"package {JavaPackage};");
-        sb.AppendLine();
-        sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
-        sb.AppendLine();
-        sb.AppendLine($"/** {Doc(file.FileName)} 配置根 */");
-        sb.AppendLine($"public class {rootType} {{");
 
-        foreach (var schema in containers)
+        for (int i = 0; i < lines.Length; i++)
         {
-            var type = JavaContainerType(schema);
-            sb.AppendLine($"    private final {type} {LowerFirst(type)} = new {type}();");
+            if (lines[i].Length > 0)
+            {
+                sb.Append(pad);
+            }
+
+            sb.Append(lines[i]);
+            if (i < lines.Length - 1)
+            {
+                sb.Append('\n');
+            }
         }
 
-        foreach (var schema in containers)
-        {
-            var type = JavaContainerType(schema);
-            sb.AppendLine();
-            sb.AppendLine($"    public {type} get{type}() {{");
-            sb.AppendLine($"        return {LowerFirst(type)};");
-            sb.AppendLine("    }");
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("    public void load(String json) {");
-        sb.AppendLine("        JsonNode root = ConfigValue.parse(json);");
-        sb.AppendLine("        if (root == null || !root.isObject()) {");
-        sb.AppendLine("            return;");
-        sb.AppendLine("        }");
-        sb.AppendLine();
-        sb.AppendLine("        JsonNode section;");
-
-        foreach (var schema in containers)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"        section = root.get(\"{schema.Name}\");");
-            sb.AppendLine("        if (section != null && !section.isNull()) {");
-            sb.AppendLine($"            {LowerFirst(JavaContainerType(schema))}.loadSection(section);");
-            sb.AppendLine("        }");
-        }
-
-        sb.AppendLine("    }");
-        sb.AppendLine("}");
         return sb.ToString();
     }
 

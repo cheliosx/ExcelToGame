@@ -149,7 +149,8 @@ export const _lang = new _language();
 
 ### 5. Java 格式（服务端）
 
-产物落在 `Java/game/config/`，包名 `game.config`，整个 `game` 目录直接拷进 `src/main/java` 即可。
+**一个 Excel 文件 = 一个 `.java` 文件**，各页签作为静态内部类嵌套在配置根里（Java 一个文件只能有一个
+public 顶层类）。产物落在 `Java/game/config/`，包名 `game.config`，整个 `game` 目录直接拷进 `src/main/java` 即可。
 生成代码依赖 **Jackson**（`JsonNode` / `ObjectMapper`），没有其他第三方依赖：
 
 ```xml
@@ -168,25 +169,30 @@ data.initLanguage("zh-Hans", read("i10n/zh-Hans.json"));
 data.load("example", read("Json/example.json"));
 
 ExampleConfig cfg = data.getExample();
-int hp = cfg.getGameArgConfig().getInitHp();          // 参数表
+int hp = cfg.getGameArgConfig().getInitHp();                          // 参数表
 int lvHp = cfg.getRoleLevelList().findByIndex(0).getHp();
-Item item = cfg.getItemMap().findById(1001);          // 主键表
-List<GrowthData> group = cfg.getGrowthDataGroup().findGroupById(1); // 分组表
+ExampleConfig.Item item = cfg.getItemMap().findById(1001);           // 主键表
+List<ExampleConfig.GrowthData> group = cfg.getGrowthDataGroup().findGroupById(1);
 Enums.EquipType type = cfg.getEquipMap().findById(3).getType();
 ```
 
-生成规则：
+生成规则（以 `example.xlsx` 为例，产物是单个 `ExampleConfig.java`）：
 
-| 页签类型 | Java 类 | 访问方式 |
+| 页签类型 | 内部类 | 访问方式 |
 |---|---|---|
 | 主键表 | `Item` + `ItemMap` | `findById(int)` / `forEach(BiConsumer)` / `getCount()` |
 | 数组表 | `RoleLevel` + `RoleLevelList` | `findByIndex(int)` / `forEach` / `getCount()` |
 | 分组表 | `GrowthData` + `GrowthDataGroup` | `findGroupById(int)` 返回 `List<T>` |
 | 参数表 | `GameArgConfig` | 各字段 getter |
-| 枚举表 | `Enums.EquipType` | `Enums.EquipType.of(int)`，找不到返回 null |
+| 枚举表 | `Enums.EquipType`（全局一个 `Enums.java`） | `Enums.EquipType.of(int)`，找不到返回 null |
 
-每个 Excel 文件还有一个配置根（`ExampleConfig`），`ExcelData` 是全部文件的总入口。
+`ExcelData` 是全部文件的总入口，`ExampleConfig` 是单个文件的配置根。
+相邻两张表同名时内部类会自动加后缀区分；不同 Excel 之间有同名页签也不会冲突（各自嵌套在根里）。
+外部只用到根类和 `ExcelData`，内部类可以用 `var` 或 `ExampleConfig.Item` 引用。
+
 实体同样只在访问字段时才解析本行；容器只存行文本 + 主键索引，不驻留整表对象。
+
+整个 `Java/` 目录（2 个 Excel）共 8 个文件：2 个配置根 + 4 个运行时类 + `Enums` + `ExcelData`。
 
 ## 四、目录结构
 
