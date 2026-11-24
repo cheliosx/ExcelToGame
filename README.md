@@ -149,8 +149,19 @@ export const _lang = new _language();
 
 ### 5. Java 格式（服务端）
 
-**一个 Excel 文件 = 一个 `.java` 文件**，各页签作为静态内部类嵌套在配置根里（Java 一个文件只能有一个
-public 顶层类）。产物落在 `Java/game/config/`，包名 `game.config`，整个 `game` 目录直接拷进 `src/main/java` 即可。
+**每个 Excel 文件一个 `.java`**，各页签作为静态内部类嵌在配置根里；运行时（语言表、行容器、取值工具）
+合并成一个 `ConfigRuntime.java`。路径是 `Java/game/config/`，包名 `game.config`，
+整个 `game` 目录直接拷进 `src/main/java` 即可。
+
+```
+Java/game/config/
+├── ExcelData.java        # 总入口：load(fileName, json) / initLanguage / getXxxConfig
+├── ConfigRuntime.java    # 运行时：LanguageManager / ConfigTable / ConfigRow / ConfigValue
+├── Enums.java            # 所有枚举
+├── ExampleConfig.java    # example.xlsx：Item / ItemMap / RoleLevel / RoleLevelList ...
+└── AttrConfig.java       # S-属性.xlsx：AttrRef / AttrRefMap
+```
+
 生成代码依赖 **Jackson**（`JsonNode` / `ObjectMapper`），没有其他第三方依赖：
 
 ```xml
@@ -168,15 +179,17 @@ ExcelData data = new ExcelData();
 data.initLanguage("zh-Hans", read("i10n/zh-Hans.json"));
 data.load("example", read("Json/example.json"));
 
-ExampleConfig cfg = data.getExample();
-int hp = cfg.getGameArgConfig().getInitHp();                          // 参数表
+ExampleConfig cfg = data.getExampleConfig();
+int hp = cfg.getGameArgConfig().getInitHp();                     // 参数表
 int lvHp = cfg.getRoleLevelList().findByIndex(0).getHp();
-ExampleConfig.Item item = cfg.getItemMap().findById(1001);           // 主键表
+ExampleConfig.Item item = cfg.getItemMap().findById(1001);      // 主键表
 List<ExampleConfig.GrowthData> group = cfg.getGrowthDataGroup().findGroupById(1);
 Enums.EquipType type = cfg.getEquipMap().findById(3).getType();
+
+String text = data.getText("Item_1002_Name");                   // 多语言
 ```
 
-生成规则（以 `example.xlsx` 为例，产物是单个 `ExampleConfig.java`）：
+生成规则：
 
 | 页签类型 | 内部类 | 访问方式 |
 |---|---|---|
@@ -184,15 +197,10 @@ Enums.EquipType type = cfg.getEquipMap().findById(3).getType();
 | 数组表 | `RoleLevel` + `RoleLevelList` | `findByIndex(int)` / `forEach` / `getCount()` |
 | 分组表 | `GrowthData` + `GrowthDataGroup` | `findGroupById(int)` 返回 `List<T>` |
 | 参数表 | `GameArgConfig` | 各字段 getter |
-| 枚举表 | `Enums.EquipType`（全局一个 `Enums.java`） | `Enums.EquipType.of(int)`，找不到返回 null |
+| 枚举表 | `Enums.EquipType` | `Enums.EquipType.of(int)`，找不到返回 null |
 
-`ExcelData` 是全部文件的总入口，`ExampleConfig` 是单个文件的配置根。
-相邻两张表同名时内部类会自动加后缀区分；不同 Excel 之间有同名页签也不会冲突（各自嵌套在根里）。
-外部只用到根类和 `ExcelData`，内部类可以用 `var` 或 `ExampleConfig.Item` 引用。
-
+内部类重名会自动加后缀（`_1`），也会避开 `ConfigRow` / `ConfigTable` / `ConfigValue` 等运行时类名。
 实体同样只在访问字段时才解析本行；容器只存行文本 + 主键索引，不驻留整表对象。
-
-整个 `Java/` 目录（2 个 Excel）共 8 个文件：2 个配置根 + 4 个运行时类 + `Enums` + `ExcelData`。
 
 ## 四、目录结构
 

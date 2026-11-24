@@ -1,11 +1,15 @@
 package game.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import game.config.ConfigRuntime.ConfigRow;
+import game.config.ConfigRuntime.ConfigTable;
+import game.config.ConfigRuntime.ConfigValue;
+import game.config.ConfigRuntime.LanguageManager;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
-/** S-属性[Attr] 配置根：页签是内部类，用法见各 getter */
+/** S-属性[Attr] 配置根：各页签是内部类 */
 public class AttrConfig {
     private final AttrRefMap attrRefMap = new AttrRefMap();
 
@@ -34,7 +38,7 @@ public class AttrConfig {
 
         private final ConfigRow _row;
 
-        public AttrRef(ConfigRow row) {
+        AttrRef(ConfigRow row) {
             this._row = row;
         }
 

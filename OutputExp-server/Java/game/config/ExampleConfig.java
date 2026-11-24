@@ -1,13 +1,17 @@
 package game.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import game.config.ConfigRuntime.ConfigRow;
+import game.config.ConfigRuntime.ConfigTable;
+import game.config.ConfigRuntime.ConfigValue;
+import game.config.ConfigRuntime.LanguageManager;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
-/** example[表格示例] 配置根：页签是内部类，用法见各 getter */
+/** example[表格示例] 配置根：各页签是内部类 */
 public class ExampleConfig {
     private final GameArgConfig gameArgConfig = new GameArgConfig();
     private final RoleLevelList roleLevelList = new RoleLevelList();
@@ -80,7 +84,7 @@ public class ExampleConfig {
 
         private final ConfigRow _row;
 
-        public RoleLevel(ConfigRow row) {
+        RoleLevel(ConfigRow row) {
             this._row = row;
         }
 
@@ -104,7 +108,7 @@ public class ExampleConfig {
 
         private final ConfigRow _row;
 
-        public Item(ConfigRow row) {
+        Item(ConfigRow row) {
             this._row = row;
         }
 
@@ -123,7 +127,7 @@ public class ExampleConfig {
 
         private final ConfigRow _row;
 
-        public Equip(ConfigRow row) {
+        Equip(ConfigRow row) {
             this._row = row;
         }
 
@@ -152,7 +156,7 @@ public class ExampleConfig {
 
         private final ConfigRow _row;
 
-        public GrowthData(ConfigRow row) {
+        GrowthData(ConfigRow row) {
             this._row = row;
         }
 

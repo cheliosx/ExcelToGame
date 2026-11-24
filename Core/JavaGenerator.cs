@@ -30,23 +30,49 @@ public partial class CodeGenerator
 
     // ---------------------------------------------------------------- 全局产物
 
-    /// <summary>Java 运行时：ConfigValue / ConfigRow / ConfigTable / LanguageManager（依赖 Jackson）</summary>
-    public async Task GenerateJavaRuntime(string javaDir)
+    /// <summary>产物里占用的顶层类型名，内部类命名时避开</summary>
+    private static readonly string[] JavaReservedTypeNames =
     {
-        var files = new (string Name, string Body)[]
-        {
-            ("ConfigValue", ConfigValueBody),
-            ("ConfigRow", ConfigRowBody),
-            ("ConfigTable", ConfigTableBody),
-            ("LanguageManager", LanguageManagerBody)
-        };
+        "ExcelData", "Enums", "ConfigRuntime", "LanguageManager", "ConfigTable", "ConfigRow", "ConfigValue"
+    };
 
-        foreach (var (name, body) in files)
+    /// <summary>运行时文件需要的 import</summary>
+    private static readonly string[] JavaRuntimeImports =
+    {
+        "import com.fasterxml.jackson.databind.JsonNode;",
+        "import com.fasterxml.jackson.databind.ObjectMapper;",
+        "import java.util.ArrayList;",
+        "import java.util.HashMap;",
+        "import java.util.Iterator;",
+        "import java.util.List;",
+        "import java.util.Map;",
+        "import java.util.function.IntFunction;"
+    };
+
+    /// <summary>
+    /// 生成 Java 产物：
+    /// 每个 Excel 一个 &lt;Name&gt;Config.java（页签是内部类），
+    /// 另外 ConfigRuntime.java（运行时合并成一个文件）、Enums.java、ExcelData.java。
+    /// </summary>
+    public async Task GenerateJava(List<(ExcelFileData File, List<TableSchema> Schemas)> tables, string javaDir)
+    {
+        await FileUtil.WriteTextAsync(Path.Combine(javaDir, "ConfigRuntime.java"), BuildJavaRuntimeFile());
+
+        var usedRoots = new HashSet<string>(JavaReservedTypeNames, StringComparer.OrdinalIgnoreCase);
+        var roots = new List<(ExcelFileData File, string Type)>();
+
+        foreach (var (file, schemas) in tables)
         {
-            await FileUtil.WriteTextAsync(Path.Combine(javaDir, $"{name}.java"), JavaSource(body));
+            var rootType = UniqueName(JavaRootType(file), usedRoots);
+            roots.Add((file, rootType));
+
+            var path = Path.Combine(javaDir, $"{rootType}.java");
+            await FileUtil.WriteTextAsync(path, BuildConfigRootFile(file, schemas, rootType));
+            Logger.Success($"生成Java: {Path.GetFileName(path)}");
         }
 
-        Logger.Success($"生成Java运行时: {files.Length} 个类");
+        await FileUtil.WriteTextAsync(Path.Combine(javaDir, "ExcelData.java"), BuildJavaEntryFile(roots));
+        Logger.Success("生成Java入口: ExcelData.java");
     }
 
     /// <summary>所有枚举统一输出到 Enums.java（嵌套在 Enums 里，避免类名冲突）</summary>
@@ -81,21 +107,54 @@ public partial class CodeGenerator
         Logger.Success("生成Java枚举: Enums.java");
     }
 
-    /// <summary>生成 Java 统一入口 ExcelData.java，登记目录下所有表格文件</summary>
-    public async Task GenerateJavaEntry(List<ExcelFileData> files, string javaDir)
+    /// <summary>运行时：行容器 + 取值工具 + 语言表，全部放在 ConfigRuntime.java 里</summary>
+    private static string BuildJavaRuntimeFile()
     {
         var sb = new StringBuilder();
         sb.AppendLine($"package {JavaPackage};");
         sb.AppendLine();
+
+        foreach (var import in JavaRuntimeImports)
+        {
+            sb.AppendLine(import);
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("/**");
+        sb.AppendLine(" * 配置运行时：语言表、行文本容器、单行取值工具。");
+        sb.AppendLine(" * 产物里只有一个运行时文件，内部类都是包内可见，对外只用 ExcelData 与各 *Config。");
+        sb.AppendLine(" * 依赖 com.fasterxml.jackson.core:jackson-databind（2.13+ 均可用）。");
+        sb.AppendLine(" */");
+        sb.AppendLine("public final class ConfigRuntime {");
+        sb.AppendLine();
+        sb.AppendLine("    private ConfigRuntime() {");
+        sb.AppendLine("    }");
+
+        foreach (var body in new[] { LanguageManagerBody, ConfigTableBody, ConfigRowBody, ConfigValueBody })
+        {
+            sb.AppendLine();
+            sb.AppendLine(Indent(JavaBodyText(body), 4));
+        }
+
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
+    /// <summary>总入口：登记所有配置根，负责按文件名分发 JSON</summary>
+    private static string BuildJavaEntryFile(List<(ExcelFileData File, string Type)> roots)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"package {JavaPackage};");
+        sb.AppendLine();
+        sb.AppendLine("import game.config.ConfigRuntime.LanguageManager;");
         sb.AppendLine("import java.util.Locale;");
         sb.AppendLine();
         sb.AppendLine("/** 所有表格文件的统一入口 */");
         sb.AppendLine("public class ExcelData {");
 
-        foreach (var file in files)
+        foreach (var (_, rootType) in roots)
         {
-            var type = JavaRootType(file);
-            sb.AppendLine($"    private final {type} {JavaEntryField(file)} = new {type}();");
+            sb.AppendLine($"    private final {rootType} {LowerFirst(rootType)} = new {rootType}();");
         }
 
         sb.AppendLine();
@@ -106,13 +165,11 @@ public partial class CodeGenerator
         sb.AppendLine("        return langCode;");
         sb.AppendLine("    }");
 
-        foreach (var file in files)
+        foreach (var (_, rootType) in roots)
         {
-            var type = JavaRootType(file);
-            var name = Pascal(file.OutputName);
             sb.AppendLine();
-            sb.AppendLine($"    public {type} get{name}() {{");
-            sb.AppendLine($"        return {JavaEntryField(file)};");
+            sb.AppendLine($"    public {rootType} get{rootType}() {{");
+            sb.AppendLine($"        return {LowerFirst(rootType)};");
             sb.AppendLine("    }");
         }
 
@@ -127,6 +184,11 @@ public partial class CodeGenerator
         sb.AppendLine("        LanguageManager.load(json);");
         sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    /** 取多语言文本：key 不存在时回退为 key 本身 */");
+        sb.AppendLine("    public String getText(String key) {");
+        sb.AppendLine("        return LanguageManager.getText(key);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
         sb.AppendLine("    /**");
         sb.AppendLine("     * 按文件名加载一个表格文件的 JSON（文件名不区分大小写）");
         sb.AppendLine("     * @param fileName 文件名（输出名，如 \"example\"）");
@@ -137,11 +199,10 @@ public partial class CodeGenerator
         sb.AppendLine();
         sb.AppendLine("        switch (key) {");
 
-        foreach (var file in files)
+        foreach (var (file, rootType) in roots)
         {
-            var key = Ident(file.OutputName).ToLowerInvariant();
-            sb.AppendLine($"            case \"{key}\":");
-            sb.AppendLine($"                {JavaEntryField(file)}.load(json);");
+            sb.AppendLine($"            case \"{Ident(file.OutputName).ToLowerInvariant()}\":");
+            sb.AppendLine($"                {LowerFirst(rootType)}.load(json);");
             sb.AppendLine("                return;");
         }
 
@@ -150,34 +211,19 @@ public partial class CodeGenerator
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine("}");
-
-        var path = Path.Combine(javaDir, "ExcelData.java");
-        await FileUtil.WriteTextAsync(path, sb.ToString());
-        Logger.Success("生成Java入口: ExcelData.java");
+        return sb.ToString();
     }
 
-    // ---------------------------------------------------------------- 单个表格文件
-
-    /// <summary>
-    /// 一个 Excel 文件 = 一个 .java 文件：所有页签作为静态内部类嵌套在配置根里。
-    /// Java 一个文件只能有一个 public 顶层类，嵌套是唯一能把产物收成一份的做法。
-    /// </summary>
-    public async Task GenerateJava(ExcelFileData file, List<TableSchema> schemas, string javaDir)
-    {
-        var rootType = JavaRootType(file);
-        var path = Path.Combine(javaDir, $"{rootType}.java");
-        await FileUtil.WriteTextAsync(path, BuildJavaFile(file, schemas, rootType));
-        Logger.Success($"生成Java: {Path.GetFileName(path)}");
-    }
+    // ---------------------------------------------------------------- 单个 Excel 的配置根
 
     /// <summary>页签对应的内部类名：Entity 为行对象（参数表没有），Container 为表对象</summary>
     private sealed record JavaNames(string? Entity, string Container);
 
-    /// <summary>分配内部类名：同一文件内重名自动加后缀，也避开与根类同名</summary>
+    /// <summary>分配内部类名：同一文件内重名自动加后缀，也避开运行时类型和根类名</summary>
     private static Dictionary<TableSchema, JavaNames> BuildJavaNames(List<TableSchema> schemas, string rootType)
     {
         var result = new Dictionary<TableSchema, JavaNames>();
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { rootType };
+        var used = new HashSet<string>(JavaReservedTypeNames, StringComparer.OrdinalIgnoreCase) { rootType };
 
         foreach (var schema in schemas.Where(s => s.Kind != TableKind.Enum))
         {
@@ -202,7 +248,8 @@ public partial class CodeGenerator
         return result;
     }
 
-    private static string BuildJavaFile(ExcelFileData file, List<TableSchema> schemas, string rootType)
+    /// <summary>一个 Excel 文件 = 一个 .java：配置根 + 各页签的实体与容器（内部类）</summary>
+    private static string BuildConfigRootFile(ExcelFileData file, List<TableSchema> schemas, string rootType)
     {
         var containers = schemas.Where(s => s.Kind != TableKind.Enum).ToList();
         var names = BuildJavaNames(schemas, rootType);
@@ -218,6 +265,10 @@ public partial class CodeGenerator
         sb.AppendLine($"package {JavaPackage};");
         sb.AppendLine();
         sb.AppendLine("import com.fasterxml.jackson.databind.JsonNode;");
+        sb.AppendLine("import game.config.ConfigRuntime.ConfigRow;");
+        sb.AppendLine("import game.config.ConfigRuntime.ConfigTable;");
+        sb.AppendLine("import game.config.ConfigRuntime.ConfigValue;");
+        sb.AppendLine("import game.config.ConfigRuntime.LanguageManager;");
         if (needsArrayList)
         {
             sb.AppendLine("import java.util.ArrayList;");
@@ -244,7 +295,7 @@ public partial class CodeGenerator
         }
 
         sb.AppendLine();
-        sb.AppendLine($"/** {Doc(file.FileName)} 配置根：页签是内部类，用法见各 getter */");
+        sb.AppendLine($"/** {Doc(file.FileName)} 配置根：各页签是内部类 */");
         sb.AppendLine($"public class {rootType} {{");
 
         foreach (var schema in containers)
@@ -329,7 +380,7 @@ public partial class CodeGenerator
         sb.AppendLine();
         sb.AppendLine("    private final ConfigRow _row;");
         sb.AppendLine();
-        sb.AppendLine($"    public {className}(ConfigRow row) {{");
+        sb.AppendLine($"    {className}(ConfigRow row) {{");
         sb.AppendLine("        this._row = row;");
         sb.AppendLine("    }");
         sb.AppendLine();
@@ -581,7 +632,7 @@ public partial class CodeGenerator
         return sb.ToString();
     }
 
-    /// <summary>整块代码右移，用于把类嵌进配置根</summary>
+    /// <summary>整块代码右移，用于把类嵌进外层类</summary>
     private static string Indent(string text, int spaces)
     {
         var pad = new string(' ', spaces);
@@ -604,6 +655,10 @@ public partial class CodeGenerator
 
         return sb.ToString();
     }
+
+    /// <summary>运行时源码块：统一换行符、去掉尾部空行</summary>
+    private static string JavaBodyText(string body) =>
+        body.Replace("\r\n", "\n").TrimEnd('\n');
 
     // ---------------------------------------------------------------- 枚举
 
@@ -837,27 +892,14 @@ public partial class CodeGenerator
         return text.Replace("\r", " ").Replace("\n", " ").Replace("*/", "* /").Trim();
     }
 
-    private static string JavaSource(string body) =>
-        $"package {JavaPackage};\n\n" + JavaBody(body);
-
-    /// <summary>去掉缩进块首尾空行，统一换行符</summary>
-    private static string JavaBody(string body) =>
-        body.Replace("\r\n", "\n").Trim('\n') + "\n";
-
     // ---------------------------------------------------------------- Java 运行时源码
 
     private const string ConfigValueBody = """
-        import com.fasterxml.jackson.databind.JsonNode;
-        import com.fasterxml.jackson.databind.ObjectMapper;
-        import java.util.ArrayList;
-        import java.util.List;
-        import java.util.function.IntFunction;
-
         /**
          * 取值工具：把 Jackson 的 JsonNode 转成字段需要的基础类型。
          * 依赖 com.fasterxml.jackson.core:jackson-databind（2.13+ 均可用）。
          */
-        final class ConfigValue {
+        static final class ConfigValue {
 
             private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -1227,10 +1269,8 @@ public partial class CodeGenerator
         """;
 
     private const string ConfigRowBody = """
-        import com.fasterxml.jackson.databind.JsonNode;
-
         /** 一行数据：首次访问字段时才解析 */
-        public final class ConfigRow {
+        static final class ConfigRow {
 
             private String data;
             private JsonNode[] values;
@@ -1251,13 +1291,11 @@ public partial class CodeGenerator
         """;
 
     private const string ConfigTableBody = """
-        import com.fasterxml.jackson.databind.JsonNode;
-
         /**
          * 行数据容器：只保存原始行文本，
          * 访问某行时才解析该行，避免一次性创建几十万个数组。
          */
-        public final class ConfigTable {
+        static final class ConfigTable {
 
             private String[] rows = new String[0];
 
@@ -1286,13 +1324,8 @@ public partial class CodeGenerator
         """;
 
     private const string LanguageManagerBody = """
-        import com.fasterxml.jackson.databind.JsonNode;
-        import java.util.HashMap;
-        import java.util.Iterator;
-        import java.util.Map;
-
         /** 语言表：key 为数字字符串，缺失时回退为 key 本身 */
-        public final class LanguageManager {
+        static final class LanguageManager {
 
             private static Map<String, String> texts = new HashMap<>();
 

@@ -1,11 +1,12 @@
 package game.config;
 
+import game.config.ConfigRuntime.LanguageManager;
 import java.util.Locale;
 
 /** 所有表格文件的统一入口 */
 public class ExcelData {
-    private final ExampleConfig example = new ExampleConfig();
-    private final AttrConfig attr = new AttrConfig();
+    private final ExampleConfig exampleConfig = new ExampleConfig();
+    private final AttrConfig attrConfig = new AttrConfig();
 
     private String langCode = "zh-Hans";
 
@@ -14,12 +15,12 @@ public class ExcelData {
         return langCode;
     }
 
-    public ExampleConfig getExample() {
-        return example;
+    public ExampleConfig getExampleConfig() {
+        return exampleConfig;
     }
 
-    public AttrConfig getAttr() {
-        return attr;
+    public AttrConfig getAttrConfig() {
+        return attrConfig;
     }
 
     /**
@@ -32,6 +33,11 @@ public class ExcelData {
         LanguageManager.load(json);
     }
 
+    /** 取多语言文本：key 不存在时回退为 key 本身 */
+    public String getText(String key) {
+        return LanguageManager.getText(key);
+    }
+
     /**
      * 按文件名加载一个表格文件的 JSON（文件名不区分大小写）
      * @param fileName 文件名（输出名，如 "example"）
@@ -42,10 +48,10 @@ public class ExcelData {
 
         switch (key) {
             case "example":
-                example.load(json);
+                exampleConfig.load(json);
                 return;
             case "attr":
-                attr.load(json);
+                attrConfig.load(json);
                 return;
             default:
                 throw new IllegalArgumentException("ExcelData: 未找到配置文件 " + fileName);

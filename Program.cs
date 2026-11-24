@@ -257,22 +257,24 @@ class Program
                 await codeGenerator.GenerateCsEntry(targetFiles, csDir);
             }
 
+            // 每个 Excel 文件一套结构：先全部构建好，Java 需要一次拿到所有配置根
+            var builder = new SchemaBuilder(validator.Types, target);
+            var builtFiles = targetFiles
+                .Select(f => (File: f, Schemas: builder.Build(f)))
+                .ToList();
+
             if (emitJava)
             {
-                await codeGenerator.GenerateJavaRuntime(javaDir);
                 await codeGenerator.GenerateJavaEnums(targetSheets, javaDir);
-                await codeGenerator.GenerateJavaEntry(targetFiles, javaDir);
+                await codeGenerator.GenerateJava(builtFiles, javaDir);
             }
 
-            // 每个 Excel 文件一套数据与实体
-            var builder = new SchemaBuilder(validator.Types, target);
-
-            for (int i = 0; i < targetFiles.Count; i++)
+            for (int i = 0; i < builtFiles.Count; i++)
             {
-                var excelData = targetFiles[i];
-                Logger.Progress($"Generating {excelData.OutputName}...", i + 1, targetFiles.Count);
+                var excelData = builtFiles[i].File;
+                Logger.Progress($"Generating {excelData.OutputName}...", i + 1, builtFiles.Count);
 
-                var schemas = builder.Build(excelData);
+                var schemas = builtFiles[i].Schemas;
 
                 await codeGenerator.GenerateJson(excelData, schemas, jsonDir);
 
@@ -284,11 +286,6 @@ class Program
                 if (emitCs)
                 {
                     await codeGenerator.GenerateCSharp(excelData, schemas, csDir);
-                }
-
-                if (emitJava)
-                {
-                    await codeGenerator.GenerateJava(excelData, schemas, javaDir);
                 }
             }
         }
